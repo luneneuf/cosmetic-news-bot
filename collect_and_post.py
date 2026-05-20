@@ -19,11 +19,13 @@ import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import feedparser
 import requests
 
 SOURCES_PATH = Path(__file__).parent / "sources.json"
+BLOCKLIST_PATH = Path(__file__).parent / "blocklist.json"
 STATE_PATH = Path("seen_links.json")  # cwd (workflow가 미리 배치)
 WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
 NAVER_ID = os.environ.get("NAVER_CLIENT_ID", "").strip()
@@ -33,6 +35,28 @@ MAX_PER_RUN = 20            # Slack rate limit·노이즈 보호
 SEEN_CAP = 10000            # state 파일 크기 폭주 방지
 SLACK_GAP_SEC = 1.2         # Incoming Webhook 분당 ~1건 권장
 NAVER_DISPLAY = 30          # 쿼리당 최대 30건 (API max 100)
+
+
+def load_blocklist() -> set[str]:
+    if not BLOCKLIST_PATH.exists():
+        return set()
+    try:
+        return {d.strip().lower() for d in json.loads(BLOCKLIST_PATH.read_text(encoding="utf-8")) if d.strip()}
+    except Exception as e:
+        print(f"[WARN] blocklist unreadable, treating as empty: {e}", file=sys.stderr)
+        return set()
+
+
+def is_blocked(url: str, blocklist: set[str]) -> bool:
+    if not blocklist:
+        return False
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return False
+    for blocked in blocklist:
+        if host == blocked or host.endswith("." + blocked):
+            return True
+    return False
 
 
 def load_seen() -> set[str]:
@@ -127,10 +151,12 @@ def main() -> int:
         return 1
 
     sources = json.loads(SOURCES_PATH.read_text(encoding="utf-8"))
+    blocklist = load_blocklist()
     seen = load_seen()
     is_bootstrap = len(seen) == 0
 
     new_items: list[dict] = []
+    blocked_count = 0
     for src in sources:
         if not src.get("enabled", True):
             continue
@@ -141,6 +167,10 @@ def main() -> int:
             continue
         for it in items:
             if it["link"] in seen:
+                continue
+            if is_blocked(it["link"], blocklist):
+                seen.add(it["link"])  # 차단 항목도 seen에 기록해 재검사 비용 절감
+                blocked_count += 1
                 continue
             new_items.append(it)
             seen.add(it["link"])
@@ -167,7 +197,7 @@ def main() -> int:
         post_text(f"_(+{overflow}개 항목은 다음 실행에서 게시)_")
 
     save_seen(seen)
-    print(f"new={len(new_items)} posted={posted} overflow={overflow}", file=sys.stderr)
+    print(f"new={len(new_items)} posted={posted} overflow={overflow} blocked={blocked_count}", file=sys.stderr)
     return 0
 
 

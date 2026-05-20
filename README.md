@@ -17,12 +17,28 @@
 cosmetic-news-bot/
 ├── README.md
 ├── sources.json           # 출처 정의 (type=naver_news | rss)
+├── blocklist.json         # 차단 도메인 (정확 일치 + 서브도메인 매칭)
 ├── requirements.txt       # feedparser + requests
 ├── collect_and_post.py    # 본체
 └── .github/
     └── workflows/
         └── cosmetic-news-bot.yml
 ```
+
+## 매체 블랙리스트
+
+코스메틱과 무관한 매체에서 광범위 키워드로 잡힌 노이즈를 차단. `blocklist.json`에 도메인 추가:
+
+```json
+[
+  "news.mbccb.co.kr",
+  "newspim.com"
+]
+```
+
+- **매칭**: hostname 정확 일치 + 서브도메인. 예) `mediafine.co.kr` 추가 시 `www.mediafine.co.kr`도 차단.
+- 차단된 항목도 `seen_links.json`에 기록되어 재검사 비용 0.
+- 추가는 PR 또는 직접 commit 후 다음 cron부터 적용.
 
 ## 시크릿
 
