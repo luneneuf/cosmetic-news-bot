@@ -39,18 +39,20 @@ cosmetic-news-bot/
 
 ## 매체 블랙리스트
 
-코스메틱과 무관한 매체에서 광범위 키워드로 잡힌 노이즈를 차단. `blocklist.json`에 도메인 추가:
+코스메틱과 무관한 매체에서 광범위 키워드로 잡힌 노이즈를 차단. `blocklist.json`에 두 가지 형식 지원:
 
 ```json
 [
-  "news.mbccb.co.kr",
-  "newspim.com"
+  "byline.network",       // 일반 도메인 (서브도메인 포함 매칭)
+  "naver:092"             // Naver press_code (n.news.naver.com·m.sports.naver.com 등)
 ]
 ```
 
-- **매칭**: hostname 정확 일치 + 서브도메인. 예) `mediafine.co.kr` 추가 시 `www.mediafine.co.kr`도 차단.
+- **일반 도메인**: `example.com` 추가 시 `www.example.com`도 차단 (서브도메인 포함)
+- **Naver press_code**: `naver:092`는 ZDNet, `naver:109`는 스포츠 등 — Naver 미러 URL의 `/article/{press_code}/` 패턴 매칭. 메이저 매체 미러는 차단하지 않으니 press_code 단위로 정교한 차단 가능.
 - 차단된 항목도 `seen_links.json`에 기록되어 재검사 비용 0.
-- 추가는 PR 또는 직접 commit 후 다음 cron부터 적용.
+
+Naver press_code 식별: 차단하고 싶은 기사 URL에서 `/article/NNN/`의 NNN을 추출.
 
 ## 시크릿
 

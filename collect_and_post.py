@@ -73,12 +73,27 @@ def load_blocklist() -> set[str]:
 
 
 def is_blocked(url: str, blocklist: set[str]) -> bool:
+    """blocklist 매칭 — 일반 도메인 + Naver press_code(`naver:NNN`) 형식 지원.
+
+    - 일반: `example.com` → hostname 정확 일치 또는 서브도메인
+    - Naver: `naver:092` → naver.com 계열 URL의 /article/{press_code}/ 매칭
+      예: n.news.naver.com/mnews/article/092/..., m.sports.naver.com/golf/article/109/...
+    """
     if not blocklist:
         return False
-    host = (urlparse(url).hostname or "").lower()
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
     if not host:
         return False
+    # Naver press_code 차단
+    if host.endswith("naver.com"):
+        m = re.search(r"/article/(\d+)/\d+", parsed.path)
+        if m and f"naver:{m.group(1)}" in blocklist:
+            return True
+    # 일반 호스트 차단
     for blocked in blocklist:
+        if blocked.startswith("naver:"):
+            continue
         if host == blocked or host.endswith("." + blocked):
             return True
     return False
