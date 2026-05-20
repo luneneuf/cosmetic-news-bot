@@ -6,9 +6,9 @@
     "enabled": true
   },
   {
-    "id": "naver_cosmetics",
+    "id": "naver_kbeauty_export",
     "type": "naver_news",
-    "query": "화장품",
+    "query": "K뷰티 수출",
     "enabled": true
   },
   {
@@ -24,9 +24,15 @@
     "enabled": true
   },
   {
-    "id": "naver_kbeauty_export",
+    "id": "naver_industry",
     "type": "naver_news",
-    "query": "K뷰티 수출",
+    "query": "화장품업계",
+    "enabled": true
+  },
+  {
+    "id": "naver_trend",
+    "type": "naver_news",
+    "query": "뷰티 트렌드",
     "enabled": true
   },
   {
