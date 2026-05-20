@@ -9,7 +9,7 @@
   - **Naver Search News API** 5개 쿼리 — K뷰티 / 화장품 / 라카 화장품 / 올리브영 / K뷰티 수출
   - **장업신문 자체 RSS** 1개 (`jangup.com/rss/allArticle.xml`)
 - **게시**: Slack `#cosmetic-news` (reperire 워크스페이스) — 링크 1줄만 (Slack OG unfurl이 카드 렌더, `unfurl_links: true` 명시)
-- **상태**: GitHub Actions Cache (`news-bot-seen-*` 키). 매 실행마다 unique key로 save, restore-keys prefix로 가장 최근 cache fallback.
+- **상태**: GitHub Actions Cache (`news-bot-seen-v3-*` 키). `seen_links.json`(URL dedup) + `seen_titles.json`(제목 시그니처 dedup, 보도자료 도배 차단).
 
 ## 파일
 
@@ -24,6 +24,18 @@ cosmetic-news-bot/
     └── workflows/
         └── cosmetic-news-bot.yml
 ```
+
+## 보도자료 도배 차단 (제목 dedup)
+
+같은 보도자료를 여러 매체가 동시 게재하는 경우, URL 기반 dedup으로는 못 잡음 (URL이 다름). **제목 signature**로 차단:
+
+- HTML entity decode + 태그 제거
+- `[속보]`·`(단독)` 같은 prefix 제거
+- 특수문자·이모지·공백 제거
+- 소문자화 + 앞 **25자 cutoff**
+- 동일 signature가 `seen_titles.json`에 있으면 게시 안 함
+
+거짓 양성(다른 기사인데 prefix가 같아 차단)이 보이면 `TITLE_SIG_LEN` 값을 늘리세요 (`collect_and_post.py` 상단).
 
 ## 매체 블랙리스트
 

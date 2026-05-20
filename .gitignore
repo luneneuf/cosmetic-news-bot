@@ -1,4 +1,5 @@
 seen_links.json
+seen_titles.json
 __pycache__/
 *.pyc
 .env

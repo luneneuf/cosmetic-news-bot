@@ -14,8 +14,10 @@ GitHub Actions 워크플로가 호출. 동작:
 
 from __future__ import annotations
 
+import html
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -26,15 +28,38 @@ import requests
 
 SOURCES_PATH = Path(__file__).parent / "sources.json"
 BLOCKLIST_PATH = Path(__file__).parent / "blocklist.json"
-STATE_PATH = Path("seen_links.json")  # cwd (workflow가 미리 배치)
+STATE_PATH = Path("seen_links.json")           # URL dedup
+TITLES_PATH = Path("seen_titles.json")         # 제목 signature dedup (보도자료 도배 차단)
 WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
 NAVER_ID = os.environ.get("NAVER_CLIENT_ID", "").strip()
 NAVER_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
-USER_AGENT = "cosmetic-news-bot/2.0 (+https://github.com/luneneuf/knowledge-hub)"
+USER_AGENT = "cosmetic-news-bot/3.0 (+https://github.com/luneneuf/cosmetic-news-bot)"
 MAX_PER_RUN = 20            # Slack rate limit·노이즈 보호
 SEEN_CAP = 10000            # state 파일 크기 폭주 방지
 SLACK_GAP_SEC = 1.2         # Incoming Webhook 분당 ~1건 권장
 NAVER_DISPLAY = 30          # 쿼리당 최대 30건 (API max 100)
+TITLE_SIG_LEN = 25          # 제목 signature prefix 길이 (보도자료 dedup)
+
+
+def title_signature(title: str, n: int = TITLE_SIG_LEN) -> str:
+    """제목을 정규화해 앞 n자 signature를 반환. 보도자료 도배 dedup용.
+
+    처리:
+    - HTML entity decode (&lt; → <)
+    - HTML 태그 제거 (<b>, <i> 등)
+    - 대괄호·괄호로 묶인 prefix 제거 ([속보], (단독))
+    - 특수문자·이모지 제거 (\\w·\\s 외 모두)
+    - 모든 공백 제거 (간격 변이 흡수)
+    - 소문자화 + 앞 n자 cutoff
+    """
+    if not title:
+        return ""
+    t = html.unescape(title)
+    t = re.sub(r"<[^>]+>", "", t)
+    t = re.sub(r"\[[^\]]+\]|\([^\)]+\)", "", t)
+    t = re.sub(r"[^\w\s]", "", t)
+    t = re.sub(r"\s+", "", t)
+    return t[:n].lower()
 
 
 def load_blocklist() -> set[str]:
@@ -59,21 +84,21 @@ def is_blocked(url: str, blocklist: set[str]) -> bool:
     return False
 
 
-def load_seen() -> set[str]:
-    if not STATE_PATH.exists():
+def load_set(path: Path) -> set[str]:
+    if not path.exists():
         return set()
     try:
-        return set(json.loads(STATE_PATH.read_text(encoding="utf-8")))
+        return set(json.loads(path.read_text(encoding="utf-8")))
     except Exception as e:
-        print(f"[WARN] state file unreadable, treating as empty: {e}", file=sys.stderr)
+        print(f"[WARN] state file {path.name} unreadable, treating as empty: {e}", file=sys.stderr)
         return set()
 
 
-def save_seen(seen: set[str]) -> None:
-    arr = list(seen)
+def save_set(path: Path, s: set[str]) -> None:
+    arr = list(s)
     if len(arr) > SEEN_CAP:
         arr = arr[-SEEN_CAP:]
-    STATE_PATH.write_text(json.dumps(arr, ensure_ascii=False), encoding="utf-8")
+    path.write_text(json.dumps(arr, ensure_ascii=False), encoding="utf-8")
 
 
 def fetch_rss(src: dict) -> list[dict]:
@@ -152,11 +177,13 @@ def main() -> int:
 
     sources = json.loads(SOURCES_PATH.read_text(encoding="utf-8"))
     blocklist = load_blocklist()
-    seen = load_seen()
-    is_bootstrap = len(seen) == 0
+    seen_urls = load_set(STATE_PATH)
+    seen_titles = load_set(TITLES_PATH)
+    is_bootstrap = len(seen_urls) == 0
 
     new_items: list[dict] = []
     blocked_count = 0
+    dup_title_count = 0
     for src in sources:
         if not src.get("enabled", True):
             continue
@@ -166,22 +193,31 @@ def main() -> int:
             print(f"[WARN] source {src['id']} failed: {ex}", file=sys.stderr)
             continue
         for it in items:
-            if it["link"] in seen:
+            if it["link"] in seen_urls:
                 continue
             if is_blocked(it["link"], blocklist):
-                seen.add(it["link"])  # 차단 항목도 seen에 기록해 재검사 비용 절감
+                seen_urls.add(it["link"])
                 blocked_count += 1
                 continue
+            sig = title_signature(it.get("title", ""))
+            if sig and sig in seen_titles:
+                # 보도자료 도배: 동일 내용이 이미 다른 매체에서 게시됨
+                seen_urls.add(it["link"])
+                dup_title_count += 1
+                continue
             new_items.append(it)
-            seen.add(it["link"])
+            seen_urls.add(it["link"])
+            if sig:
+                seen_titles.add(sig)
 
     if is_bootstrap:
         post_text(
             f":robot_face: cosmetic-news-bot 시작 — {len(new_items)}개 기존 항목 부트스트랩 완료. "
             f"다음 실행부터 신규 항목만 게시합니다."
         )
-        save_seen(seen)
-        print(f"bootstrap: seeded {len(new_items)} items", file=sys.stderr)
+        save_set(STATE_PATH, seen_urls)
+        save_set(TITLES_PATH, seen_titles)
+        print(f"bootstrap: seeded {len(new_items)} items, {len(seen_titles)} titles", file=sys.stderr)
         return 0
 
     to_post = new_items[:MAX_PER_RUN]
@@ -196,8 +232,13 @@ def main() -> int:
     if overflow > 0:
         post_text(f"_(+{overflow}개 항목은 다음 실행에서 게시)_")
 
-    save_seen(seen)
-    print(f"new={len(new_items)} posted={posted} overflow={overflow} blocked={blocked_count}", file=sys.stderr)
+    save_set(STATE_PATH, seen_urls)
+    save_set(TITLES_PATH, seen_titles)
+    print(
+        f"new={len(new_items)} posted={posted} overflow={overflow} "
+        f"blocked={blocked_count} dup_title={dup_title_count}",
+        file=sys.stderr,
+    )
     return 0
 
 

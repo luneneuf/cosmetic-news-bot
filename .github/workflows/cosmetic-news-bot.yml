@@ -26,24 +26,32 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Restore seen_links cache
+      - name: Restore state cache
         id: cache-restore
         uses: actions/cache/restore@v4
         with:
-          path: seen_links.json
+          path: |
+            seen_links.json
+            seen_titles.json
           # primary key는 unique (매번 cache miss → 항상 save 트리거)
-          # restore-keys로 가장 최근 cache fallback
-          key: news-bot-seen-${{ github.run_id }}-${{ github.run_attempt }}
+          # v3: 제목 dedup 도입으로 schema 변경 (seen_titles.json 추가)
+          key: news-bot-seen-v3-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            news-bot-seen-
+            news-bot-seen-v3-
 
       - name: Init empty state if cache miss
         run: |
           if [ ! -f seen_links.json ]; then
             echo '[]' > seen_links.json
-            echo "cache miss — initialized empty state"
+            echo "seen_links.json: initialized empty"
           else
-            echo "restored cache: $(wc -c < seen_links.json) bytes"
+            echo "seen_links.json: $(wc -c < seen_links.json) bytes"
+          fi
+          if [ ! -f seen_titles.json ]; then
+            echo '[]' > seen_titles.json
+            echo "seen_titles.json: initialized empty"
+          else
+            echo "seen_titles.json: $(wc -c < seen_titles.json) bytes"
           fi
 
       - uses: actions/setup-python@v5
@@ -61,9 +69,11 @@ jobs:
           NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
         run: python collect_and_post.py
 
-      - name: Save seen_links cache
+      - name: Save state cache
         if: always()  # 워크플로 fail에도 save 보장
         uses: actions/cache/save@v4
         with:
-          path: seen_links.json
-          key: news-bot-seen-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            seen_links.json
+            seen_titles.json
+          key: news-bot-seen-v3-${{ github.run_id }}-${{ github.run_attempt }}
