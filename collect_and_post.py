@@ -28,38 +28,88 @@ import requests
 
 SOURCES_PATH = Path(__file__).parent / "sources.json"
 BLOCKLIST_PATH = Path(__file__).parent / "blocklist.json"
-STATE_PATH = Path("seen_links.json")           # URL dedup
-TITLES_PATH = Path("seen_titles.json")         # 제목 signature dedup (보도자료 도배 차단)
+STATE_PATH = Path("seen_links.json")               # URL dedup
+TITLES_PATH = Path("seen_titles.json")             # 짧은 제목용 25자 prefix sig
+TITLES_TOKENS_PATH = Path("seen_titles_tokens.json")  # 토큰 기반 Jaccard dedup (보도자료 도배 차단)
 WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
 NAVER_ID = os.environ.get("NAVER_CLIENT_ID", "").strip()
 NAVER_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
-USER_AGENT = "cosmetic-news-bot/3.0 (+https://github.com/luneneuf/cosmetic-news-bot)"
+USER_AGENT = "cosmetic-news-bot/4.0 (+https://github.com/luneneuf/cosmetic-news-bot)"
 MAX_PER_RUN = 20            # Slack rate limit·노이즈 보호
 SEEN_CAP = 10000            # state 파일 크기 폭주 방지
 SLACK_GAP_SEC = 1.2         # Incoming Webhook 분당 ~1건 권장
 NAVER_DISPLAY = 30          # 쿼리당 최대 30건 (API max 100)
-TITLE_SIG_LEN = 25          # 제목 signature prefix 길이 (보도자료 dedup)
+TITLE_SIG_LEN = 25          # 짧은 제목 prefix signature 길이
+MIN_TOKENS_FOR_JACCARD = 7  # 7+ 토큰일 때만 Jaccard 사용 (거짓 양성 방지)
+JACCARD_THRESHOLD = 0.5     # 단어 set 유사도 50%+면 중복 판단
+MIN_TOKEN_LEN = 2           # 2자 이상 단어만 토큰화
+
+# 한국어 조사 (단어 끝에 붙는 1~2자 조사 — 토큰 정규화 시 제거)
+KOREAN_PARTICLES = (
+    "에서", "으로", "부터", "까지",
+    "은", "는", "이", "가", "을", "를", "와", "과",
+    "에", "로", "의", "도", "만", "한", "하",
+)
 
 
-def title_signature(title: str, n: int = TITLE_SIG_LEN) -> str:
-    """제목을 정규화해 앞 n자 signature를 반환. 보도자료 도배 dedup용.
-
-    처리:
-    - HTML entity decode (&lt; → <)
-    - HTML 태그 제거 (<b>, <i> 등)
-    - 대괄호·괄호로 묶인 prefix 제거 ([속보], (단독))
-    - 특수문자·이모지 제거 (\\w·\\s 외 모두)
-    - 모든 공백 제거 (간격 변이 흡수)
-    - 소문자화 + 앞 n자 cutoff
-    """
-    if not title:
-        return ""
+def _normalize_title(title: str) -> str:
+    """제목 공통 정규화: HTML decode·태그 제거·대괄호 prefix 제거·소문자."""
     t = html.unescape(title)
     t = re.sub(r"<[^>]+>", "", t)
     t = re.sub(r"\[[^\]]+\]|\([^\)]+\)", "", t)
+    return t.lower()
+
+
+def title_signature(title: str, n: int = TITLE_SIG_LEN) -> str:
+    """앞 n자 signature — 짧은 제목·MIN_TOKENS_FOR_JACCARD 미만 토큰 case용 fallback."""
+    if not title:
+        return ""
+    t = _normalize_title(title)
     t = re.sub(r"[^\w\s]", "", t)
     t = re.sub(r"\s+", "", t)
-    return t[:n].lower()
+    return t[:n]
+
+
+def title_tokens(title: str) -> frozenset[str]:
+    """제목 → 단어 set. 한국어 조사 제거·2자 이상 단어만.
+
+    Jaccard 유사도 dedup용. 매체별 단어 순서·표현 재배열에 강함.
+    """
+    if not title:
+        return frozenset()
+    t = _normalize_title(title)
+    # 특수문자를 공백으로 (split 보존)
+    t = re.sub(r"[^\w\s]", " ", t)
+    words = t.split()
+    cleaned = []
+    for w in words:
+        # 단어 끝 한국어 조사 제거 (어근 최소 2자 보장)
+        for p in KOREAN_PARTICLES:
+            if w.endswith(p) and len(w) > len(p) + 1:
+                w = w[:-len(p)]
+                break
+        if len(w) >= MIN_TOKEN_LEN:
+            cleaned.append(w)
+    return frozenset(cleaned)
+
+
+def jaccard(a: frozenset, b: frozenset) -> float:
+    if not a or not b:
+        return 0.0
+    union = len(a | b)
+    if union == 0:
+        return 0.0
+    return len(a & b) / union
+
+
+def is_dup_by_tokens(new_tokens: frozenset, seen_tokens_list: list, threshold: float = JACCARD_THRESHOLD) -> bool:
+    """Jaccard 유사도 기반 중복 판단. 토큰 수 7+인 제목에만 적용 (거짓 양성 방지)."""
+    if len(new_tokens) < MIN_TOKENS_FOR_JACCARD:
+        return False
+    for st in seen_tokens_list:
+        if len(st) >= MIN_TOKENS_FOR_JACCARD and jaccard(new_tokens, st) >= threshold:
+            return True
+    return False
 
 
 def load_blocklist() -> set[str]:
@@ -114,6 +164,25 @@ def save_set(path: Path, s: set[str]) -> None:
     if len(arr) > SEEN_CAP:
         arr = arr[-SEEN_CAP:]
     path.write_text(json.dumps(arr, ensure_ascii=False), encoding="utf-8")
+
+
+def load_token_list(path: Path) -> list[frozenset[str]]:
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return [frozenset(t) for t in raw]
+    except Exception as e:
+        print(f"[WARN] token file {path.name} unreadable, treating as empty: {e}", file=sys.stderr)
+        return []
+
+
+def save_token_list(path: Path, data: list[frozenset[str]]) -> None:
+    arr = data
+    if len(arr) > SEEN_CAP:
+        arr = arr[-SEEN_CAP:]
+    serialized = [sorted(list(t)) for t in arr]
+    path.write_text(json.dumps(serialized, ensure_ascii=False), encoding="utf-8")
 
 
 def fetch_rss(src: dict) -> list[dict]:
@@ -193,7 +262,8 @@ def main() -> int:
     sources = json.loads(SOURCES_PATH.read_text(encoding="utf-8"))
     blocklist = load_blocklist()
     seen_urls = load_set(STATE_PATH)
-    seen_titles = load_set(TITLES_PATH)
+    seen_titles_sig = load_set(TITLES_PATH)
+    seen_titles_tokens = load_token_list(TITLES_TOKENS_PATH)
     is_bootstrap = len(seen_urls) == 0
 
     new_items: list[dict] = []
@@ -214,16 +284,30 @@ def main() -> int:
                 seen_urls.add(it["link"])
                 blocked_count += 1
                 continue
-            sig = title_signature(it.get("title", ""))
-            if sig and sig in seen_titles:
-                # 보도자료 도배: 동일 내용이 이미 다른 매체에서 게시됨
+
+            title = it.get("title", "")
+            tokens = title_tokens(title)
+            sig = title_signature(title)
+
+            # 1차: 토큰 기반 Jaccard 유사도 (긴 제목 + 단어 재배열에 강함)
+            if is_dup_by_tokens(tokens, seen_titles_tokens):
                 seen_urls.add(it["link"])
                 dup_title_count += 1
                 continue
+
+            # 2차: prefix sig (짧은 제목·토큰 부족 case fallback)
+            if sig and sig in seen_titles_sig:
+                seen_urls.add(it["link"])
+                dup_title_count += 1
+                continue
+
+            # 신규 항목
             new_items.append(it)
             seen_urls.add(it["link"])
             if sig:
-                seen_titles.add(sig)
+                seen_titles_sig.add(sig)
+            if tokens:
+                seen_titles_tokens.append(tokens)
 
     if is_bootstrap:
         post_text(
@@ -231,8 +315,13 @@ def main() -> int:
             f"다음 실행부터 신규 항목만 게시합니다."
         )
         save_set(STATE_PATH, seen_urls)
-        save_set(TITLES_PATH, seen_titles)
-        print(f"bootstrap: seeded {len(new_items)} items, {len(seen_titles)} titles", file=sys.stderr)
+        save_set(TITLES_PATH, seen_titles_sig)
+        save_token_list(TITLES_TOKENS_PATH, seen_titles_tokens)
+        print(
+            f"bootstrap: seeded {len(new_items)} items, "
+            f"{len(seen_titles_sig)} sigs, {len(seen_titles_tokens)} token sets",
+            file=sys.stderr,
+        )
         return 0
 
     to_post = new_items[:MAX_PER_RUN]
@@ -248,7 +337,8 @@ def main() -> int:
         post_text(f"_(+{overflow}개 항목은 다음 실행에서 게시)_")
 
     save_set(STATE_PATH, seen_urls)
-    save_set(TITLES_PATH, seen_titles)
+    save_set(TITLES_PATH, seen_titles_sig)
+    save_token_list(TITLES_TOKENS_PATH, seen_titles_tokens)
     print(
         f"new={len(new_items)} posted={posted} overflow={overflow} "
         f"blocked={blocked_count} dup_title={dup_title_count}",

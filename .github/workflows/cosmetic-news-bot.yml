@@ -33,26 +33,23 @@ jobs:
           path: |
             seen_links.json
             seen_titles.json
+            seen_titles_tokens.json
           # primary key는 unique (매번 cache miss → 항상 save 트리거)
-          # v3: 제목 dedup 도입으로 schema 변경 (seen_titles.json 추가)
-          key: news-bot-seen-v3-${{ github.run_id }}-${{ github.run_attempt }}
+          # v4: Jaccard 토큰 dedup 추가 (seen_titles_tokens.json schema)
+          key: news-bot-seen-v4-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            news-bot-seen-v3-
+            news-bot-seen-v4-
 
       - name: Init empty state if cache miss
         run: |
-          if [ ! -f seen_links.json ]; then
-            echo '[]' > seen_links.json
-            echo "seen_links.json: initialized empty"
-          else
-            echo "seen_links.json: $(wc -c < seen_links.json) bytes"
-          fi
-          if [ ! -f seen_titles.json ]; then
-            echo '[]' > seen_titles.json
-            echo "seen_titles.json: initialized empty"
-          else
-            echo "seen_titles.json: $(wc -c < seen_titles.json) bytes"
-          fi
+          for f in seen_links.json seen_titles.json seen_titles_tokens.json; do
+            if [ ! -f "$f" ]; then
+              echo '[]' > "$f"
+              echo "$f: initialized empty"
+            else
+              echo "$f: $(wc -c < "$f") bytes"
+            fi
+          done
 
       - uses: actions/setup-python@v5
         with:
@@ -76,4 +73,5 @@ jobs:
           path: |
             seen_links.json
             seen_titles.json
-          key: news-bot-seen-v3-${{ github.run_id }}-${{ github.run_attempt }}
+            seen_titles_tokens.json
+          key: news-bot-seen-v4-${{ github.run_id }}-${{ github.run_attempt }}

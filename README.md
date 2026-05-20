@@ -25,17 +25,34 @@ cosmetic-news-bot/
         └── cosmetic-news-bot.yml
 ```
 
-## 보도자료 도배 차단 (제목 dedup)
+## 보도자료 도배 차단 (제목 dedup) — 2단계
 
-같은 보도자료를 여러 매체가 동시 게재하는 경우, URL 기반 dedup으로는 못 잡음 (URL이 다름). **제목 signature**로 차단:
+같은 보도자료를 여러 매체가 동시 게재하는 경우 URL 기반 dedup으로 못 잡음 (URL이 다름). 매체별로 단어 순서·표현을 재배열하기 때문에 단순 prefix도 못 잡음. **2단계 dedup**:
 
-- HTML entity decode + 태그 제거
-- `[속보]`·`(단독)` 같은 prefix 제거
-- 특수문자·이모지·공백 제거
-- 소문자화 + 앞 **25자 cutoff**
-- 동일 signature가 `seen_titles.json`에 있으면 게시 안 함
+### 1차 — 단어 set Jaccard 유사도 (긴 제목, 7+ 토큰)
 
-거짓 양성(다른 기사인데 prefix가 같아 차단)이 보이면 `TITLE_SIG_LEN` 값을 늘리세요 (`collect_and_post.py` 상단).
+- 제목 정규화 후 단어 split, 한국어 조사 제거(`은/는/이/가/을/를/와/과` 등), 2자 이상 토큰 set화
+- 기존 `seen_titles_tokens.json` 안의 모든 토큰 set과 Jaccard 비교
+- **50%+ 일치하면 차단** (예: 토큰 10개·8개에서 6개 공통 → 0.6, 차단)
+
+```
+A: "원텍, 앰버서더 활동 확대…배우 원지안과 아시아 48개국 공략 나서"
+B: "원텍, 원지안 배우 앰버서더 활동 아시아 전역 확대"
+공통 토큰: 원텍·앰버서더·활동·확대·배우·원지안·아시아 (7개)
+Jaccard = 7 / 11 = 0.64 → 차단 ✅
+```
+
+### 2차 — 25자 prefix sig (짧은 제목 fallback)
+
+- 토큰 수 7 미만이면 Jaccard 신뢰성 ↓ (거짓 양성 위험)
+- 정규화된 제목 앞 25자가 일치하면 차단
+- `seen_titles.json` 기반
+
+### 튜닝
+
+- 거짓 양성(다른 기사인데 차단) 발생 시 → `JACCARD_THRESHOLD` 0.5 → 0.6
+- 거짓 음성(중복인데 못 잡음) 발생 시 → `JACCARD_THRESHOLD` 0.5 → 0.4 (단어 더 안 겹쳐도 차단)
+- `collect_and_post.py` 상단 상수.
 
 ## 매체 블랙리스트
 
