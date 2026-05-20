@@ -1,0 +1,39 @@
+[
+  {
+    "id": "naver_kbeauty",
+    "type": "naver_news",
+    "query": "K뷰티",
+    "enabled": true
+  },
+  {
+    "id": "naver_cosmetics",
+    "type": "naver_news",
+    "query": "화장품",
+    "enabled": true
+  },
+  {
+    "id": "naver_laka",
+    "type": "naver_news",
+    "query": "라카 화장품",
+    "enabled": true
+  },
+  {
+    "id": "naver_olive_young",
+    "type": "naver_news",
+    "query": "올리브영",
+    "enabled": true
+  },
+  {
+    "id": "naver_kbeauty_export",
+    "type": "naver_news",
+    "query": "K뷰티 수출",
+    "enabled": true
+  },
+  {
+    "id": "rss_jangup",
+    "type": "rss",
+    "url": "https://www.jangup.com/rss/allArticle.xml",
+    "enabled": true,
+    "note": "장업신문 (자체 RSS 동작 확인)"
+  }
+]
