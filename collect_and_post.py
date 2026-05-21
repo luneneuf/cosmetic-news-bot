@@ -34,15 +34,16 @@ TITLES_TOKENS_PATH = Path("seen_titles_tokens.json")  # 토큰 기반 Jaccard de
 WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
 NAVER_ID = os.environ.get("NAVER_CLIENT_ID", "").strip()
 NAVER_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
-USER_AGENT = "cosmetic-news-bot/4.0 (+https://github.com/luneneuf/cosmetic-news-bot)"
-MAX_PER_RUN = 20            # Slack rate limit·노이즈 보호
-SEEN_CAP = 10000            # state 파일 크기 폭주 방지
-SLACK_GAP_SEC = 1.2         # Incoming Webhook 분당 ~1건 권장
-NAVER_DISPLAY = 30          # 쿼리당 최대 30건 (API max 100)
-TITLE_SIG_LEN = 25          # 짧은 제목 prefix signature 길이
-MIN_TOKENS_FOR_JACCARD = 7  # 7+ 토큰일 때만 Jaccard 사용 (거짓 양성 방지)
-JACCARD_THRESHOLD = 0.5     # 단어 set 유사도 50%+면 중복 판단
-MIN_TOKEN_LEN = 2           # 2자 이상 단어만 토큰화
+USER_AGENT = "cosmetic-news-bot/5.0 (+https://github.com/luneneuf/cosmetic-news-bot)"
+MAX_PER_RUN = 20             # Slack rate limit·노이즈 보호
+SEEN_CAP = 10000             # state 파일 크기 폭주 방지
+SLACK_GAP_SEC = 1.2          # Incoming Webhook 분당 ~1건 권장
+NAVER_DISPLAY = 30           # 쿼리당 최대 30건 (API max 100)
+TITLE_SIG_LEN = 25           # 짧은 제목 prefix signature 길이
+MIN_TOKENS_FOR_DEDUP = 5     # 5+ 토큰일 때만 토큰 dedup 적용 (거짓 양성 방지)
+JACCARD_THRESHOLD = 0.4      # 단어 set Jaccard 유사도 40%+면 중복
+INCLUSION_THRESHOLD = 0.5    # 한 제목의 50%+가 다른 제목에 포함되면 중복 (보도자료의 매체별 표현 다양성 흡수)
+MIN_TOKEN_LEN = 2            # 2자 이상 단어만 토큰화
 
 # 한국어 조사 (단어 끝에 붙는 1~2자 조사 — 토큰 정규화 시 제거)
 KOREAN_PARTICLES = (
@@ -93,21 +94,31 @@ def title_tokens(title: str) -> frozenset[str]:
     return frozenset(cleaned)
 
 
-def jaccard(a: frozenset, b: frozenset) -> float:
-    if not a or not b:
-        return 0.0
-    union = len(a | b)
-    if union == 0:
-        return 0.0
-    return len(a & b) / union
+def is_dup_by_tokens(new_tokens: frozenset, seen_tokens_list: list) -> bool:
+    """토큰 set 기반 중복 판단 — Jaccard OR Inclusion.
 
-
-def is_dup_by_tokens(new_tokens: frozenset, seen_tokens_list: list, threshold: float = JACCARD_THRESHOLD) -> bool:
-    """Jaccard 유사도 기반 중복 판단. 토큰 수 7+인 제목에만 적용 (거짓 양성 방지)."""
-    if len(new_tokens) < MIN_TOKENS_FOR_JACCARD:
+    - Jaccard >= JACCARD_THRESHOLD (0.4): 두 제목의 교집합/합집합 비율
+    - Inclusion >= INCLUSION_THRESHOLD (0.5): 한 제목의 토큰이 다른 제목에 포함된 비율 (max)
+      → 보도자료처럼 매체별 제목 다양성이 큰 경우 (한쪽이 핵심어, 다른 쪽이 풍부한 표현) 잡음
+    - 둘 중 하나라도 만족하면 중복.
+    - 토큰 수 5 미만이면 신뢰성 ↓로 skip (prefix sig fallback).
+    """
+    if len(new_tokens) < MIN_TOKENS_FOR_DEDUP:
         return False
+    new_len = len(new_tokens)
     for st in seen_tokens_list:
-        if len(st) >= MIN_TOKENS_FOR_JACCARD and jaccard(new_tokens, st) >= threshold:
+        if len(st) < MIN_TOKENS_FOR_DEDUP:
+            continue
+        inter = len(new_tokens & st)
+        if inter == 0:
+            continue
+        # Jaccard
+        union = new_len + len(st) - inter
+        if union > 0 and inter / union >= JACCARD_THRESHOLD:
+            return True
+        # Inclusion (max of either direction)
+        inclusion = max(inter / new_len, inter / len(st))
+        if inclusion >= INCLUSION_THRESHOLD:
             return True
     return False
 
