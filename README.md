@@ -6,8 +6,9 @@
 
 - **트리거**: GitHub Actions cron `*/15 0-8 * * 1-5` (UTC) = 평일 09:00-17:45 KST 매 15분
 - **출처** (`sources.json`):
-  - **Naver Search News API** 5개 쿼리 — K뷰티 / 화장품 / 라카 화장품 / 올리브영 / K뷰티 수출
+  - **Naver Search News API** 6개 쿼리 — K뷰티 / K뷰티 수출 / 라카 화장품 / 올리브영 / 화장품업계 / 뷰티 트렌드
   - **장업신문 자체 RSS** 1개 (`jangup.com/rss/allArticle.xml`)
+  - **매칭 정책**: Naver는 본문까지 검색하지만 후처리로 **제목 한정 AND 매칭** 적용. 쿼리의 모든 단어가 제목에 있어야 통과 (예: `라카 화장품` → 제목에 "라카"·"화장품" 둘 다 필수).
 - **게시**: Slack `#cosmetic-news` (reperire 워크스페이스) — 링크 1줄만 (Slack OG unfurl이 카드 렌더, `unfurl_links: true` 명시)
 - **상태**: GitHub Actions Cache (`news-bot-seen-v3-*` 키). `seen_links.json`(URL dedup) + `seen_titles.json`(제목 시그니처 dedup, 보도자료 도배 차단).
 

@@ -201,6 +201,12 @@ def fetch_rss(src: dict) -> list[dict]:
 
 
 def fetch_naver_news(src: dict) -> list[dict]:
+    """Naver News Search API.
+
+    Naver API는 제목+본문 모두 검색하지만, 본문 매칭 노이즈가 너무 큼
+    (예: 예능 기사 본문에 '뷰티' 한 단어만 있어도 잡힘).
+    → 후처리로 **제목에 쿼리의 모든 단어가 들어가야 통과** (AND 매칭).
+    """
     if not NAVER_ID or not NAVER_SECRET:
         raise RuntimeError("NAVER_CLIENT_ID / NAVER_CLIENT_SECRET not set")
     r = requests.get(
@@ -218,16 +224,18 @@ def fetch_naver_news(src: dict) -> list[dict]:
     )
     r.raise_for_status()
     payload = r.json()
+    query_words = [w for w in src["query"].lower().split() if w]
     items: list[dict] = []
     for it in payload.get("items", []):
         link = it.get("link")
         if not link:
             continue
-        items.append({
-            "title": it.get("title", ""),
-            "link": link,
-            "source": src["id"],
-        })
+        raw_title = it.get("title", "")
+        title_norm = re.sub(r"<[^>]+>", "", html.unescape(raw_title)).lower()
+        # 제목 한정 AND 매칭 — 본문에만 매칭된 노이즈 차단
+        if query_words and not all(w in title_norm for w in query_words):
+            continue
+        items.append({"title": raw_title, "link": link, "source": src["id"]})
     return items
 
 
