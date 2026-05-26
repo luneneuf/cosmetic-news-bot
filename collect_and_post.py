@@ -47,7 +47,7 @@ NAVER_DISPLAY = 30
 TITLE_SIG_LEN = 25
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIM = 512               # 1536 → 512로 축소 (저장·계산 비용 ↓)
-EMBEDDING_THRESHOLD = 0.85        # cosine similarity 0.85+면 중복
+EMBEDDING_THRESHOLD = 0.80        # cosine similarity 0.80+면 중복 (0.85는 한국어 짧은 제목 too strict)
 
 
 # ─────────────────────────────────────────────────────────────
