@@ -31,6 +31,7 @@ BLOCKLIST_PATH = Path(__file__).parent / "blocklist.json"
 STATE_PATH = Path("seen_links.json")
 TITLES_PATH = Path("seen_titles.json")           # 짧은 제목 prefix sig fallback
 EMBEDDINGS_PATH = Path("seen_titles_embeddings.json")  # OpenAI embedding dedup
+POSTED_LOG_PATH = Path("posted_log.jsonl")       # 아침 브리핑 봇용 게시 이력
 
 WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
 NAVER_ID = os.environ.get("NAVER_CLIENT_ID", "").strip()
@@ -246,6 +247,19 @@ def fetch_source(src: dict) -> list[dict]:
 # ─────────────────────────────────────────────────────────────
 # Slack post
 
+def append_posted_log(item: dict) -> None:
+    """게시 성공 항목을 posted_log.jsonl에 누적 (아침 브리핑 봇 데이터 소스)."""
+    import datetime as _dt
+    row = {
+        "ts": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "url": item["link"],
+        "title": title_clean(item.get("title", "")),
+        "source": item.get("source", ""),
+    }
+    with open(POSTED_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def post_text(text: str) -> bool:
     r = requests.post(
         WEBHOOK,
@@ -355,6 +369,7 @@ def main() -> int:
     for it in to_post:
         if post_text(it["link"]):
             posted += 1
+            append_posted_log(it)
         time.sleep(SLACK_GAP_SEC)
 
     if overflow > 0:

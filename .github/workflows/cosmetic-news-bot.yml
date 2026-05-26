@@ -34,10 +34,11 @@ jobs:
             seen_links.json
             seen_titles.json
             seen_titles_embeddings.json
-          # v5: OpenAI embedding dedup 도입 (seen_titles_embeddings.json schema)
-          key: news-bot-seen-v5-${{ github.run_id }}-${{ github.run_attempt }}
+            posted_log.jsonl
+          # v6: posted_log.jsonl 추가 (아침 브리핑 봇 데이터 소스)
+          key: news-bot-seen-v6-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            news-bot-seen-v5-
+            news-bot-seen-v6-
 
       - name: Init empty state if cache miss
         run: |
@@ -49,6 +50,12 @@ jobs:
               echo "$f: $(wc -c < "$f") bytes"
             fi
           done
+          if [ ! -f "posted_log.jsonl" ]; then
+            touch posted_log.jsonl
+            echo "posted_log.jsonl: initialized empty"
+          else
+            echo "posted_log.jsonl: $(wc -l < posted_log.jsonl) lines"
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -74,4 +81,5 @@ jobs:
             seen_links.json
             seen_titles.json
             seen_titles_embeddings.json
-          key: news-bot-seen-v5-${{ github.run_id }}-${{ github.run_attempt }}
+            posted_log.jsonl
+          key: news-bot-seen-v6-${{ github.run_id }}-${{ github.run_attempt }}

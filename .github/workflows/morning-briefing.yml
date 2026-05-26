@@ -1,0 +1,60 @@
+name: morning-briefing
+
+on:
+  schedule:
+    - cron: '0 23 * * 1-5'   # UTC 23:00 = KST 평일 08:00
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: morning-briefing
+  cancel-in-progress: false
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Restore posted_log from cosmetic-news-bot cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            seen_links.json
+            seen_titles.json
+            seen_titles_embeddings.json
+            posted_log.jsonl
+          key: news-bot-seen-v6-${{ github.run_id }}
+          restore-keys: |
+            news-bot-seen-v6-
+
+      - name: Check posted_log
+        run: |
+          if [ -f "posted_log.jsonl" ]; then
+            echo "posted_log.jsonl: $(wc -l < posted_log.jsonl) lines"
+          else
+            echo "posted_log.jsonl: not found (cache miss or first run)"
+            touch posted_log.jsonl
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - name: Run briefing
+        env:
+          BRIEFING_SLACK_WEBHOOK_URL: ${{ secrets.BRIEFING_SLACK_WEBHOOK_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python briefing.py
