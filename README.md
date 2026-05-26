@@ -2,6 +2,10 @@
 
 코스메틱 산업 뉴스 → Slack `#cosmetic-news` 게시 봇.
 
+기획서·작업지시서는 [`docs/`](docs/) 폴더 참고:
+- [`docs/cosmetic_news_bot_기획서.md`](docs/cosmetic_news_bot_기획서.md) — 본 봇의 기획·운영 배경
+- [`docs/morning_briefing_bot_기획서.md`](docs/morning_briefing_bot_기획서.md) — 자매 도구 (AI 큐레이션 아침 브리핑, Linear COM-47)
+
 ## 동작
 
 - **트리거**: GitHub Actions cron `*/15 0-8 * * 1-5` (UTC) = 평일 09:00-17:45 KST 매 15분
