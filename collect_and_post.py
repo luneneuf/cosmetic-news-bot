@@ -28,6 +28,7 @@ import requests
 
 SOURCES_PATH = Path(__file__).parent / "sources.json"
 BLOCKLIST_PATH = Path(__file__).parent / "blocklist.json"
+NEGATIVE_KW_PATH = Path(__file__).parent / "negative_title_keywords.json"  # 제목에 있으면 차단
 STATE_PATH = Path("seen_links.json")               # URL dedup
 TITLES_PATH = Path("seen_titles.json")             # 짧은 제목용 25자 prefix sig
 TITLES_TOKENS_PATH = Path("seen_titles_tokens.json")  # 토큰 기반 Jaccard dedup (보도자료 도배 차단)
@@ -131,6 +132,22 @@ def load_blocklist() -> set[str]:
     except Exception as e:
         print(f"[WARN] blocklist unreadable, treating as empty: {e}", file=sys.stderr)
         return set()
+
+
+def load_negative_keywords() -> set[str]:
+    if not NEGATIVE_KW_PATH.exists():
+        return set()
+    try:
+        return {k.strip().lower() for k in json.loads(NEGATIVE_KW_PATH.read_text(encoding="utf-8")) if k.strip()}
+    except Exception as e:
+        print(f"[WARN] negative keywords unreadable, treating as empty: {e}", file=sys.stderr)
+        return set()
+
+
+def has_negative_keyword(title_norm: str, negatives: set[str]) -> bool:
+    if not negatives or not title_norm:
+        return False
+    return any(neg in title_norm for neg in negatives)
 
 
 def is_blocked(url: str, blocklist: set[str]) -> bool:
@@ -280,6 +297,7 @@ def main() -> int:
 
     sources = json.loads(SOURCES_PATH.read_text(encoding="utf-8"))
     blocklist = load_blocklist()
+    negative_kws = load_negative_keywords()
     seen_urls = load_set(STATE_PATH)
     seen_titles_sig = load_set(TITLES_PATH)
     seen_titles_tokens = load_token_list(TITLES_TOKENS_PATH)
@@ -287,6 +305,7 @@ def main() -> int:
 
     new_items: list[dict] = []
     blocked_count = 0
+    neg_kw_count = 0
     dup_title_count = 0
     for src in sources:
         if not src.get("enabled", True):
@@ -305,6 +324,12 @@ def main() -> int:
                 continue
 
             title = it.get("title", "")
+            title_norm_lower = re.sub(r"<[^>]+>", "", html.unescape(title)).lower()
+            if has_negative_keyword(title_norm_lower, negative_kws):
+                seen_urls.add(it["link"])
+                neg_kw_count += 1
+                continue
+
             tokens = title_tokens(title)
             sig = title_signature(title)
 
@@ -360,7 +385,7 @@ def main() -> int:
     save_token_list(TITLES_TOKENS_PATH, seen_titles_tokens)
     print(
         f"new={len(new_items)} posted={posted} overflow={overflow} "
-        f"blocked={blocked_count} dup_title={dup_title_count}",
+        f"blocked={blocked_count} neg_kw={neg_kw_count} dup_title={dup_title_count}",
         file=sys.stderr,
     )
     return 0
