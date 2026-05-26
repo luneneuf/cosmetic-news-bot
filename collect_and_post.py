@@ -1,21 +1,20 @@
-"""코스메틱 뉴스 → Slack 게시 봇.
+"""코스메틱 뉴스 → Slack 게시 봇 (OpenAI embedding dedup 버전).
 
 GitHub Actions 워크플로가 호출. 동작:
-1. ./seen_links.json 로드 (워크플로 cache가 미리 배치, 없으면 빈 배열)
-2. sources.json의 각 source를 type별로 폴링
-   - type="naver_news": Naver Search API의 link (원본 매체 URL 또는 네이버 미러)
-   - type="rss": RSS feed의 entry.link
-3. 신규 링크만 Slack 게시 (링크 1줄 — Slack OG unfurl이 카드 렌더)
-4. seen_links.json 갱신 (워크플로 cache가 save)
-
-부트스트랩 보호: seen이 비어있으면 모든 항목을 seen에 기록만 하고 게시 0건
-(시작 알림 1건만). 다음 실행부터 신규만.
+1. ./seen_links.json (URL dedup) + seen_titles_embeddings.json (의미 dedup) 로드
+2. sources.json의 각 source 폴링 (Naver News API + RSS)
+3. 신규 후보 수집 (URL·blocklist·prefix sig 1차 필터)
+4. OpenAI embedding 배치 호출 → seen embeddings와 cosine similarity 비교
+5. similarity >= 0.85 시 차단 (보도자료 도배 매체별 제목 변형 흡수)
+6. 통과 항목 Slack 게시 (링크 1줄 + unfurl)
+7. state 갱신 (URL + sig + embedding)
 """
 
 from __future__ import annotations
 
 import html
 import json
+import math
 import os
 import re
 import sys
@@ -24,37 +23,36 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import feedparser
+import numpy as np
 import requests
 
 SOURCES_PATH = Path(__file__).parent / "sources.json"
 BLOCKLIST_PATH = Path(__file__).parent / "blocklist.json"
-STATE_PATH = Path("seen_links.json")               # URL dedup
-TITLES_PATH = Path("seen_titles.json")             # 짧은 제목용 25자 prefix sig
-TITLES_TOKENS_PATH = Path("seen_titles_tokens.json")  # 토큰 기반 Jaccard dedup (보도자료 도배 차단)
+STATE_PATH = Path("seen_links.json")
+TITLES_PATH = Path("seen_titles.json")           # 짧은 제목 prefix sig fallback
+EMBEDDINGS_PATH = Path("seen_titles_embeddings.json")  # OpenAI embedding dedup
+
 WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
 NAVER_ID = os.environ.get("NAVER_CLIENT_ID", "").strip()
 NAVER_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
-USER_AGENT = "cosmetic-news-bot/5.0 (+https://github.com/luneneuf/cosmetic-news-bot)"
-MAX_PER_RUN = 20             # Slack rate limit·노이즈 보호
-SEEN_CAP = 10000             # state 파일 크기 폭주 방지
-SLACK_GAP_SEC = 1.2          # Incoming Webhook 분당 ~1건 권장
-NAVER_DISPLAY = 30           # 쿼리당 최대 30건 (API max 100)
-TITLE_SIG_LEN = 25           # 짧은 제목 prefix signature 길이
-MIN_TOKENS_FOR_DEDUP = 5     # 5+ 토큰일 때만 토큰 dedup 적용 (거짓 양성 방지)
-JACCARD_THRESHOLD = 0.4      # 단어 set Jaccard 유사도 40%+면 중복
-INCLUSION_THRESHOLD = 0.5    # 한 제목의 50%+가 다른 제목에 포함되면 중복 (보도자료의 매체별 표현 다양성 흡수)
-MIN_TOKEN_LEN = 2            # 2자 이상 단어만 토큰화
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 
-# 한국어 조사 (단어 끝에 붙는 1~2자 조사 — 토큰 정규화 시 제거)
-KOREAN_PARTICLES = (
-    "에서", "으로", "부터", "까지",
-    "은", "는", "이", "가", "을", "를", "와", "과",
-    "에", "로", "의", "도", "만", "한", "하",
-)
+USER_AGENT = "cosmetic-news-bot/6.0 (+https://github.com/luneneuf/cosmetic-news-bot)"
+MAX_PER_RUN = 20
+SEEN_CAP = 10000
+EMBEDDINGS_CAP = 2000             # embedding cache 크기 (각 ~2KB → 4MB)
+SLACK_GAP_SEC = 1.2
+NAVER_DISPLAY = 30
+TITLE_SIG_LEN = 25
+EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_DIM = 512               # 1536 → 512로 축소 (저장·계산 비용 ↓)
+EMBEDDING_THRESHOLD = 0.85        # cosine similarity 0.85+면 중복
 
+
+# ─────────────────────────────────────────────────────────────
+# Title normalize / signature
 
 def _normalize_title(title: str) -> str:
-    """제목 공통 정규화: HTML decode·태그 제거·대괄호 prefix 제거·소문자."""
     t = html.unescape(title)
     t = re.sub(r"<[^>]+>", "", t)
     t = re.sub(r"\[[^\]]+\]|\([^\)]+\)", "", t)
@@ -62,7 +60,6 @@ def _normalize_title(title: str) -> str:
 
 
 def title_signature(title: str, n: int = TITLE_SIG_LEN) -> str:
-    """앞 n자 signature — 짧은 제목·MIN_TOKENS_FOR_JACCARD 미만 토큰 case용 fallback."""
     if not title:
         return ""
     t = _normalize_title(title)
@@ -71,57 +68,17 @@ def title_signature(title: str, n: int = TITLE_SIG_LEN) -> str:
     return t[:n]
 
 
-def title_tokens(title: str) -> frozenset[str]:
-    """제목 → 단어 set. 한국어 조사 제거·2자 이상 단어만.
-
-    Jaccard 유사도 dedup용. 매체별 단어 순서·표현 재배열에 강함.
-    """
+def title_clean(title: str) -> str:
+    """embedding 입력용 정제 — HTML decode + 태그 제거. 의미 정보는 보존."""
     if not title:
-        return frozenset()
-    t = _normalize_title(title)
-    # 특수문자를 공백으로 (split 보존)
-    t = re.sub(r"[^\w\s]", " ", t)
-    words = t.split()
-    cleaned = []
-    for w in words:
-        # 단어 끝 한국어 조사 제거 (어근 최소 2자 보장)
-        for p in KOREAN_PARTICLES:
-            if w.endswith(p) and len(w) > len(p) + 1:
-                w = w[:-len(p)]
-                break
-        if len(w) >= MIN_TOKEN_LEN:
-            cleaned.append(w)
-    return frozenset(cleaned)
+        return ""
+    t = html.unescape(title)
+    t = re.sub(r"<[^>]+>", "", t)
+    return t.strip()
 
 
-def is_dup_by_tokens(new_tokens: frozenset, seen_tokens_list: list) -> bool:
-    """토큰 set 기반 중복 판단 — Jaccard OR Inclusion.
-
-    - Jaccard >= JACCARD_THRESHOLD (0.4): 두 제목의 교집합/합집합 비율
-    - Inclusion >= INCLUSION_THRESHOLD (0.5): 한 제목의 토큰이 다른 제목에 포함된 비율 (max)
-      → 보도자료처럼 매체별 제목 다양성이 큰 경우 (한쪽이 핵심어, 다른 쪽이 풍부한 표현) 잡음
-    - 둘 중 하나라도 만족하면 중복.
-    - 토큰 수 5 미만이면 신뢰성 ↓로 skip (prefix sig fallback).
-    """
-    if len(new_tokens) < MIN_TOKENS_FOR_DEDUP:
-        return False
-    new_len = len(new_tokens)
-    for st in seen_tokens_list:
-        if len(st) < MIN_TOKENS_FOR_DEDUP:
-            continue
-        inter = len(new_tokens & st)
-        if inter == 0:
-            continue
-        # Jaccard
-        union = new_len + len(st) - inter
-        if union > 0 and inter / union >= JACCARD_THRESHOLD:
-            return True
-        # Inclusion (max of either direction)
-        inclusion = max(inter / new_len, inter / len(st))
-        if inclusion >= INCLUSION_THRESHOLD:
-            return True
-    return False
-
+# ─────────────────────────────────────────────────────────────
+# Blocklist
 
 def load_blocklist() -> set[str]:
     if not BLOCKLIST_PATH.exists():
@@ -129,29 +86,21 @@ def load_blocklist() -> set[str]:
     try:
         return {d.strip().lower() for d in json.loads(BLOCKLIST_PATH.read_text(encoding="utf-8")) if d.strip()}
     except Exception as e:
-        print(f"[WARN] blocklist unreadable, treating as empty: {e}", file=sys.stderr)
+        print(f"[WARN] blocklist unreadable: {e}", file=sys.stderr)
         return set()
 
 
 def is_blocked(url: str, blocklist: set[str]) -> bool:
-    """blocklist 매칭 — 일반 도메인 + Naver press_code(`naver:NNN`) 형식 지원.
-
-    - 일반: `example.com` → hostname 정확 일치 또는 서브도메인
-    - Naver: `naver:092` → naver.com 계열 URL의 /article/{press_code}/ 매칭
-      예: n.news.naver.com/mnews/article/092/..., m.sports.naver.com/golf/article/109/...
-    """
     if not blocklist:
         return False
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
     if not host:
         return False
-    # Naver press_code 차단
     if host.endswith("naver.com"):
         m = re.search(r"/article/(\d+)/\d+", parsed.path)
         if m and f"naver:{m.group(1)}" in blocklist:
             return True
-    # 일반 호스트 차단
     for blocked in blocklist:
         if blocked.startswith("naver:"):
             continue
@@ -160,13 +109,16 @@ def is_blocked(url: str, blocklist: set[str]) -> bool:
     return False
 
 
+# ─────────────────────────────────────────────────────────────
+# State I/O
+
 def load_set(path: Path) -> set[str]:
     if not path.exists():
         return set()
     try:
         return set(json.loads(path.read_text(encoding="utf-8")))
     except Exception as e:
-        print(f"[WARN] state file {path.name} unreadable, treating as empty: {e}", file=sys.stderr)
+        print(f"[WARN] state {path.name} unreadable: {e}", file=sys.stderr)
         return set()
 
 
@@ -177,24 +129,69 @@ def save_set(path: Path, s: set[str]) -> None:
     path.write_text(json.dumps(arr, ensure_ascii=False), encoding="utf-8")
 
 
-def load_token_list(path: Path) -> list[frozenset[str]]:
+def load_embeddings(path: Path) -> np.ndarray:
+    """L2-normalized embedding matrix. shape (N, EMBEDDING_DIM)."""
     if not path.exists():
-        return []
+        return np.empty((0, EMBEDDING_DIM), dtype=np.float32)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        return [frozenset(t) for t in raw]
+        if not raw:
+            return np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+        arr = np.array(raw, dtype=np.float32)
+        return arr
     except Exception as e:
-        print(f"[WARN] token file {path.name} unreadable, treating as empty: {e}", file=sys.stderr)
-        return []
+        print(f"[WARN] embeddings unreadable: {e}", file=sys.stderr)
+        return np.empty((0, EMBEDDING_DIM), dtype=np.float32)
 
 
-def save_token_list(path: Path, data: list[frozenset[str]]) -> None:
-    arr = data
-    if len(arr) > SEEN_CAP:
-        arr = arr[-SEEN_CAP:]
-    serialized = [sorted(list(t)) for t in arr]
-    path.write_text(json.dumps(serialized, ensure_ascii=False), encoding="utf-8")
+def save_embeddings(path: Path, matrix: np.ndarray) -> None:
+    if matrix.shape[0] > EMBEDDINGS_CAP:
+        matrix = matrix[-EMBEDDINGS_CAP:]
+    rounded = np.round(matrix, 6).tolist()
+    path.write_text(json.dumps(rounded), encoding="utf-8")
 
+
+# ─────────────────────────────────────────────────────────────
+# OpenAI embedding
+
+def fetch_embeddings(texts: list[str]) -> np.ndarray:
+    """OpenAI API batch 호출 → L2-normalized matrix (N, EMBEDDING_DIM)."""
+    if not texts:
+        return np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    r = requests.post(
+        "https://api.openai.com/v1/embeddings",
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "input": texts,
+            "model": EMBEDDING_MODEL,
+            "dimensions": EMBEDDING_DIM,
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    data = r.json()
+    vectors = np.array([d["embedding"] for d in data["data"]], dtype=np.float32)
+    # L2 정규화 → 이후 cosine similarity는 dot product 한 번으로 끝
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1.0, norms)
+    return vectors / norms
+
+
+def is_dup_by_embedding(new_vec: np.ndarray, seen_matrix: np.ndarray, threshold: float = EMBEDDING_THRESHOLD) -> bool:
+    """seen_matrix (정규화됨) 안에 new_vec (정규화됨)과 cosine sim >= threshold가 있는지."""
+    if seen_matrix.shape[0] == 0:
+        return False
+    sims = seen_matrix @ new_vec  # 둘 다 정규화돼 있어 dot = cosine
+    return bool((sims >= threshold).any())
+
+
+# ─────────────────────────────────────────────────────────────
+# Source fetching
 
 def fetch_rss(src: dict) -> list[dict]:
     headers = {"User-Agent": USER_AGENT}
@@ -212,25 +209,13 @@ def fetch_rss(src: dict) -> list[dict]:
 
 
 def fetch_naver_news(src: dict) -> list[dict]:
-    """Naver News Search API.
-
-    Naver API는 제목+본문 모두 검색하지만, 본문 매칭 노이즈가 너무 큼
-    (예: 예능 기사 본문에 '뷰티' 한 단어만 있어도 잡힘).
-    → 후처리로 **제목에 쿼리의 모든 단어가 들어가야 통과** (AND 매칭).
-    """
+    """Naver News Search API. 제목 한정 AND 매칭으로 본문 매칭 노이즈 차단."""
     if not NAVER_ID or not NAVER_SECRET:
         raise RuntimeError("NAVER_CLIENT_ID / NAVER_CLIENT_SECRET not set")
     r = requests.get(
         "https://openapi.naver.com/v1/search/news.json",
-        params={
-            "query": src["query"],
-            "display": NAVER_DISPLAY,
-            "sort": "date",
-        },
-        headers={
-            "X-Naver-Client-Id": NAVER_ID,
-            "X-Naver-Client-Secret": NAVER_SECRET,
-        },
+        params={"query": src["query"], "display": NAVER_DISPLAY, "sort": "date"},
+        headers={"X-Naver-Client-Id": NAVER_ID, "X-Naver-Client-Secret": NAVER_SECRET},
         timeout=20,
     )
     r.raise_for_status()
@@ -243,7 +228,6 @@ def fetch_naver_news(src: dict) -> list[dict]:
             continue
         raw_title = it.get("title", "")
         title_norm = re.sub(r"<[^>]+>", "", html.unescape(raw_title)).lower()
-        # 제목 한정 AND 매칭 — 본문에만 매칭된 노이즈 차단
         if query_words and not all(w in title_norm for w in query_words):
             continue
         items.append({"title": raw_title, "link": link, "source": src["id"]})
@@ -259,9 +243,10 @@ def fetch_source(src: dict) -> list[dict]:
     raise RuntimeError(f"unknown source type: {t}")
 
 
+# ─────────────────────────────────────────────────────────────
+# Slack post
+
 def post_text(text: str) -> bool:
-    # bot user의 메시지는 기본 unfurl_links=false (Slack 정책).
-    # 뉴스 기사 OG 카드 렌더링을 위해 명시적으로 true 지정 필수.
     r = requests.post(
         WEBHOOK,
         json={"text": text, "unfurl_links": True, "unfurl_media": True},
@@ -273,21 +258,28 @@ def post_text(text: str) -> bool:
     return True
 
 
+# ─────────────────────────────────────────────────────────────
+# Main
+
 def main() -> int:
     if not WEBHOOK:
         print("ERROR: SLACK_WEBHOOK_URL not set", file=sys.stderr)
+        return 1
+    if not OPENAI_API_KEY:
+        print("ERROR: OPENAI_API_KEY not set", file=sys.stderr)
         return 1
 
     sources = json.loads(SOURCES_PATH.read_text(encoding="utf-8"))
     blocklist = load_blocklist()
     seen_urls = load_set(STATE_PATH)
-    seen_titles_sig = load_set(TITLES_PATH)
-    seen_titles_tokens = load_token_list(TITLES_TOKENS_PATH)
+    seen_sigs = load_set(TITLES_PATH)
+    seen_embeddings = load_embeddings(EMBEDDINGS_PATH)
     is_bootstrap = len(seen_urls) == 0
 
-    new_items: list[dict] = []
+    # 1단계: 후보 수집 (URL·blocklist·prefix sig 1차 필터)
+    candidates: list[dict] = []  # {item, sig}
     blocked_count = 0
-    dup_title_count = 0
+    dup_sig_count = 0
     for src in sources:
         if not src.get("enabled", True):
             continue
@@ -303,49 +295,62 @@ def main() -> int:
                 seen_urls.add(it["link"])
                 blocked_count += 1
                 continue
-
-            title = it.get("title", "")
-            tokens = title_tokens(title)
-            sig = title_signature(title)
-
-            # 1차: 토큰 기반 Jaccard 유사도 (긴 제목 + 단어 재배열에 강함)
-            if is_dup_by_tokens(tokens, seen_titles_tokens):
+            sig = title_signature(it.get("title", ""))
+            if sig and sig in seen_sigs:
+                # 짧은 제목 정확 일치 (embedding 호출 비용 절감 + 빠름)
                 seen_urls.add(it["link"])
-                dup_title_count += 1
+                dup_sig_count += 1
                 continue
+            candidates.append({"item": it, "sig": sig})
 
-            # 2차: prefix sig (짧은 제목·토큰 부족 case fallback)
-            if sig and sig in seen_titles_sig:
-                seen_urls.add(it["link"])
-                dup_title_count += 1
-                continue
+    # 2단계: embedding 배치 계산
+    titles_for_embed = [title_clean(c["item"].get("title", "")) for c in candidates]
+    new_embeddings = fetch_embeddings(titles_for_embed) if titles_for_embed else np.empty((0, EMBEDDING_DIM), dtype=np.float32)
 
-            # 신규 항목
-            new_items.append(it)
-            seen_urls.add(it["link"])
-            if sig:
-                seen_titles_sig.add(sig)
-            if tokens:
-                seen_titles_tokens.append(tokens)
-
+    # 3단계: 부트스트랩 모드 — 모두 seen에 기록, 게시 0건
     if is_bootstrap:
+        for c, vec in zip(candidates, new_embeddings):
+            seen_urls.add(c["item"]["link"])
+            if c["sig"]:
+                seen_sigs.add(c["sig"])
+        if new_embeddings.shape[0] > 0:
+            seen_embeddings = np.vstack([seen_embeddings, new_embeddings])
         post_text(
-            f":robot_face: cosmetic-news-bot 시작 — {len(new_items)}개 기존 항목 부트스트랩 완료. "
+            f":robot_face: cosmetic-news-bot 시작 — {len(candidates)}개 기존 항목 부트스트랩 완료. "
             f"다음 실행부터 신규 항목만 게시합니다."
         )
         save_set(STATE_PATH, seen_urls)
-        save_set(TITLES_PATH, seen_titles_sig)
-        save_token_list(TITLES_TOKENS_PATH, seen_titles_tokens)
-        print(
-            f"bootstrap: seeded {len(new_items)} items, "
-            f"{len(seen_titles_sig)} sigs, {len(seen_titles_tokens)} token sets",
-            file=sys.stderr,
-        )
+        save_set(TITLES_PATH, seen_sigs)
+        save_embeddings(EMBEDDINGS_PATH, seen_embeddings)
+        print(f"bootstrap: {len(candidates)} items, {seen_embeddings.shape[0]} embeddings", file=sys.stderr)
         return 0
 
+    # 4단계: embedding dedup
+    new_items: list[dict] = []
+    dup_emb_count = 0
+    accepted_embeddings: list[np.ndarray] = []
+    for c, vec in zip(candidates, new_embeddings):
+        if is_dup_by_embedding(vec, seen_embeddings):
+            seen_urls.add(c["item"]["link"])
+            dup_emb_count += 1
+            continue
+        # 같은 batch 안에서도 dedup (한 cron에서 보도자료가 여러 매체에 들어온 case)
+        if accepted_embeddings and is_dup_by_embedding(vec, np.array(accepted_embeddings)):
+            seen_urls.add(c["item"]["link"])
+            dup_emb_count += 1
+            continue
+        new_items.append(c["item"])
+        seen_urls.add(c["item"]["link"])
+        if c["sig"]:
+            seen_sigs.add(c["sig"])
+        accepted_embeddings.append(vec)
+
+    if accepted_embeddings:
+        seen_embeddings = np.vstack([seen_embeddings, np.array(accepted_embeddings)])
+
+    # 5단계: Slack 게시 (MAX_PER_RUN cap + rate limit)
     to_post = new_items[:MAX_PER_RUN]
     overflow = len(new_items) - len(to_post)
-
     posted = 0
     for it in to_post:
         if post_text(it["link"]):
@@ -356,11 +361,11 @@ def main() -> int:
         post_text(f"_(+{overflow}개 항목은 다음 실행에서 게시)_")
 
     save_set(STATE_PATH, seen_urls)
-    save_set(TITLES_PATH, seen_titles_sig)
-    save_token_list(TITLES_TOKENS_PATH, seen_titles_tokens)
+    save_set(TITLES_PATH, seen_sigs)
+    save_embeddings(EMBEDDINGS_PATH, seen_embeddings)
     print(
         f"new={len(new_items)} posted={posted} overflow={overflow} "
-        f"blocked={blocked_count} dup_title={dup_title_count}",
+        f"blocked={blocked_count} dup_sig={dup_sig_count} dup_emb={dup_emb_count}",
         file=sys.stderr,
     )
     return 0

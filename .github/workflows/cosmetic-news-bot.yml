@@ -33,16 +33,15 @@ jobs:
           path: |
             seen_links.json
             seen_titles.json
-            seen_titles_tokens.json
-          # primary key는 unique (매번 cache miss → 항상 save 트리거)
-          # v4: Jaccard 토큰 dedup 추가 (seen_titles_tokens.json schema)
-          key: news-bot-seen-v4-${{ github.run_id }}-${{ github.run_attempt }}
+            seen_titles_embeddings.json
+          # v5: OpenAI embedding dedup 도입 (seen_titles_embeddings.json schema)
+          key: news-bot-seen-v5-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            news-bot-seen-v4-
+            news-bot-seen-v5-
 
       - name: Init empty state if cache miss
         run: |
-          for f in seen_links.json seen_titles.json seen_titles_tokens.json; do
+          for f in seen_links.json seen_titles.json seen_titles_embeddings.json; do
             if [ ! -f "$f" ]; then
               echo '[]' > "$f"
               echo "$f: initialized empty"
@@ -64,6 +63,7 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python collect_and_post.py
 
       - name: Save state cache
@@ -73,5 +73,5 @@ jobs:
           path: |
             seen_links.json
             seen_titles.json
-            seen_titles_tokens.json
-          key: news-bot-seen-v4-${{ github.run_id }}-${{ github.run_attempt }}
+            seen_titles_embeddings.json
+          key: news-bot-seen-v5-${{ github.run_id }}-${{ github.run_attempt }}

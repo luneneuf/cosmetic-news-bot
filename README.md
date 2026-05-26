@@ -26,36 +26,37 @@ cosmetic-news-bot/
         └── cosmetic-news-bot.yml
 ```
 
-## 보도자료 도배 차단 (제목 dedup) — 2단계
+## 보도자료 도배 차단 — OpenAI Embedding dedup
 
-같은 보도자료를 여러 매체가 동시 게재하는 경우 URL 기반 dedup으로 못 잡음 (URL이 다름). 매체별로 단어 순서·표현을 재배열하기 때문에 단순 prefix도 못 잡음. **2단계 dedup**:
+같은 보도자료를 여러 매체가 동시 게재하는 경우 URL 기반 dedup으로 못 잡고, 토큰 기반 Jaccard·Inclusion도 매체별 제목 변형이 너무 크면 한계 (CJ컵 케이스처럼 공통 토큰 3개/합 14개 = 0.21).
 
-### 1차 — 토큰 set 유사도 (5+ 토큰)
+**OpenAI `text-embedding-3-small`** 로 제목을 512차원 의미 벡터로 변환 → seen 벡터들과 cosine similarity 비교 → **0.85+ 시 중복**.
 
-제목을 토큰화(한국어 조사 제거, 2자 이상 단어만)한 뒤 **Jaccard OR Inclusion** 두 기준 중 하나라도 만족하면 중복:
+### 흐름
 
-- **Jaccard ≥ 0.4**: 교집합 / 합집합. 두 제목 토큰 비슷한 분량일 때 유효.
-- **Inclusion ≥ 0.5**: 한 제목의 토큰이 다른 제목에 포함된 비율 (max). 한쪽이 핵심어만, 다른 쪽이 풍부한 표현일 때 유효 — 보도자료의 매체별 표현 다양성 흡수.
+1. 후보 1차 필터 — URL · blocklist · 25자 prefix sig
+2. 통과한 후보들의 제목 batch embedding 1회 호출
+3. seen embeddings (정규화된 matrix)와 dot product → max similarity
+4. 0.85+ → 차단 (seen에는 추가, Slack 게시 X)
+5. 같은 batch 안 dedup도 적용 (같은 cron에 여러 매체 보도자료)
 
-```
-A: "CJ올리브영, 美 오프라인 1호점…'진짜 K-뷰티' 알린다" (6토큰)
-B: "CJ올리브영, 미국 첫 오프라인 매장 연다…'K-뷰티 놀이터' 구현" (8토큰)
-공통: CJ올리브영·오프라인·K뷰티 (3개)
-Jaccard = 3/11 = 0.27 (안 됨)
-Inclusion = max(3/6, 3/8) = 0.5 → 차단 ✅
-```
+### 비용
 
-### 2차 — 25자 prefix sig (짧은 제목 fallback)
-
-- 토큰 수 5 미만이면 dedup 정확도 ↓
-- 정규화된 제목 앞 25자가 일치하면 차단
-- `seen_titles.json` 기반
+- text-embedding-3-small: $0.020 / 1M tokens
+- 일 ~50 신규 항목 × 평균 30 tokens = 1,500 tokens/일 ≈ 45K/월
+- **월 ~$0.001** (사실상 무료)
 
 ### 튜닝
 
-- 거짓 양성(다른 기사인데 차단) 발생 시 → `INCLUSION_THRESHOLD` 0.5 → 0.6
-- 거짓 음성(중복인데 못 잡음) 발생 시 → `JACCARD_THRESHOLD` 0.4 → 0.3
+- 거짓 양성(다른 기사인데 차단) → `EMBEDDING_THRESHOLD` 0.85 → 0.90
+- 거짓 음성(중복인데 못 잡음) → 0.85 → 0.80
 - 상수는 `collect_and_post.py` 상단.
+
+### state 파일
+
+- `seen_links.json` — URL dedup
+- `seen_titles.json` — 25자 prefix sig (embedding 호출 전 빠른 차단)
+- `seen_titles_embeddings.json` — 512차원 정규화 벡터 list (cap 2000, ~4MB)
 
 ## 매체 블랙리스트
 
@@ -76,13 +77,14 @@ Naver press_code 식별: 차단하고 싶은 기사 URL에서 `/article/NNN/`의
 
 ## 시크릿
 
-GitHub Repository Secret 3개 — https://github.com/luneneuf/cosmetic-news-bot/settings/secrets/actions
+GitHub Repository Secret 4개 — https://github.com/luneneuf/cosmetic-news-bot/settings/secrets/actions
 
 | Secret 이름 | 용도 | 발급 |
 |---|---|---|
 | `SLACK_WEBHOOK_URL` | Slack 게시 | Slack App → Incoming Webhooks |
 | `NAVER_CLIENT_ID` | Naver Search API | https://developers.naver.com/apps/ |
 | `NAVER_CLIENT_SECRET` | Naver Search API | 동일 |
+| `OPENAI_API_KEY` | 제목 embedding dedup | https://platform.openai.com/api-keys |
 
 ## 부트스트랩
 

@@ -1,6 +1,7 @@
 seen_links.json
 seen_titles.json
 seen_titles_tokens.json
+seen_titles_embeddings.json
 __pycache__/
 *.pyc
 .env
