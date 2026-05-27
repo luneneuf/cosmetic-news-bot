@@ -79,6 +79,17 @@ def title_clean(title: str) -> str:
     return t.strip()
 
 
+def is_korean_title(title: str) -> bool:
+    """제목에 한글이 1자라도 있으면 한국어 기사로 간주.
+    영문 매체가 K-뷰티 보도자료를 영어로 번역해 게시한 케이스 차단용.
+    """
+    if not title:
+        return False
+    cleaned = html.unescape(title)
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+    return bool(re.search(r"[가-힣]", cleaned))
+
+
 # ─────────────────────────────────────────────────────────────
 # Blocklist
 
@@ -309,10 +320,11 @@ def main() -> int:
     seen_embeddings = load_embeddings(EMBEDDINGS_PATH)
     is_bootstrap = len(seen_urls) == 0
 
-    # 1단계: 후보 수집 (URL·blocklist·prefix sig 1차 필터)
+    # 1단계: 후보 수집 (URL·blocklist·한국어·prefix sig 1차 필터)
     candidates: list[dict] = []  # {item, sig}
     blocked_count = 0
     keyword_blocked_count = 0
+    non_korean_count = 0
     dup_sig_count = 0
     for src in sources:
         if not src.get("enabled", True):
@@ -332,6 +344,11 @@ def main() -> int:
             if is_title_blocked(it.get("title", ""), keyword_blocklist):
                 seen_urls.add(it["link"])
                 keyword_blocked_count += 1
+                continue
+            if not is_korean_title(it.get("title", "")):
+                # 한국어 봇 — 영문 제목 차단 (cross-language embedding dedup 한계 회피)
+                seen_urls.add(it["link"])
+                non_korean_count += 1
                 continue
             sig = title_signature(it.get("title", ""))
             if sig and sig in seen_sigs:
@@ -405,7 +422,7 @@ def main() -> int:
     print(
         f"new={len(new_items)} posted={posted} overflow={overflow} "
         f"blocked={blocked_count} kw_blocked={keyword_blocked_count} "
-        f"dup_sig={dup_sig_count} dup_emb={dup_emb_count}",
+        f"non_kr={non_korean_count} dup_sig={dup_sig_count} dup_emb={dup_emb_count}",
         file=sys.stderr,
     )
     return 0
