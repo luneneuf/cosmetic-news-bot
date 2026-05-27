@@ -28,6 +28,7 @@ import requests
 
 SOURCES_PATH = Path(__file__).parent / "sources.json"
 BLOCKLIST_PATH = Path(__file__).parent / "blocklist.json"
+KEYWORD_BLOCKLIST_PATH = Path(__file__).parent / "keyword_blocklist.json"
 STATE_PATH = Path("seen_links.json")
 TITLES_PATH = Path("seen_titles.json")           # 짧은 제목 prefix sig fallback
 EMBEDDINGS_PATH = Path("seen_titles_embeddings.json")  # OpenAI embedding dedup
@@ -80,6 +81,23 @@ def title_clean(title: str) -> str:
 
 # ─────────────────────────────────────────────────────────────
 # Blocklist
+
+def load_keyword_blocklist() -> list[str]:
+    if not KEYWORD_BLOCKLIST_PATH.exists():
+        return []
+    try:
+        return [k.strip() for k in json.loads(KEYWORD_BLOCKLIST_PATH.read_text(encoding="utf-8")) if k.strip()]
+    except Exception as e:
+        print(f"[WARN] keyword_blocklist unreadable: {e}", file=sys.stderr)
+        return []
+
+
+def is_title_blocked(title: str, keywords: list[str]) -> bool:
+    if not keywords or not title:
+        return False
+    t = title.lower()
+    return any(k.lower() in t for k in keywords)
+
 
 def load_blocklist() -> set[str]:
     if not BLOCKLIST_PATH.exists():
@@ -285,6 +303,7 @@ def main() -> int:
 
     sources = json.loads(SOURCES_PATH.read_text(encoding="utf-8"))
     blocklist = load_blocklist()
+    keyword_blocklist = load_keyword_blocklist()
     seen_urls = load_set(STATE_PATH)
     seen_sigs = load_set(TITLES_PATH)
     seen_embeddings = load_embeddings(EMBEDDINGS_PATH)
@@ -293,6 +312,7 @@ def main() -> int:
     # 1단계: 후보 수집 (URL·blocklist·prefix sig 1차 필터)
     candidates: list[dict] = []  # {item, sig}
     blocked_count = 0
+    keyword_blocked_count = 0
     dup_sig_count = 0
     for src in sources:
         if not src.get("enabled", True):
@@ -308,6 +328,10 @@ def main() -> int:
             if is_blocked(it["link"], blocklist):
                 seen_urls.add(it["link"])
                 blocked_count += 1
+                continue
+            if is_title_blocked(it.get("title", ""), keyword_blocklist):
+                seen_urls.add(it["link"])
+                keyword_blocked_count += 1
                 continue
             sig = title_signature(it.get("title", ""))
             if sig and sig in seen_sigs:
@@ -380,7 +404,8 @@ def main() -> int:
     save_embeddings(EMBEDDINGS_PATH, seen_embeddings)
     print(
         f"new={len(new_items)} posted={posted} overflow={overflow} "
-        f"blocked={blocked_count} dup_sig={dup_sig_count} dup_emb={dup_emb_count}",
+        f"blocked={blocked_count} kw_blocked={keyword_blocked_count} "
+        f"dup_sig={dup_sig_count} dup_emb={dup_emb_count}",
         file=sys.stderr,
     )
     return 0
