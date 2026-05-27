@@ -79,6 +79,15 @@ def title_clean(title: str) -> str:
     return t.strip()
 
 
+def embed_text(item: dict) -> str:
+    """embedding 입력 — 제목 + description 합침. 짧은 제목의 매체별 변형을 본문으로 안정화."""
+    title = title_clean(item.get("title", ""))
+    desc = title_clean(item.get("description", ""))
+    if desc:
+        return f"{title}\n{desc}"
+    return title
+
+
 def is_korean_title(title: str) -> bool:
     """제목에 한글이 1자라도 있으면 한국어 기사로 간주.
     영문 매체가 K-뷰티 보도자료를 영어로 번역해 게시한 케이스 차단용.
@@ -234,7 +243,8 @@ def fetch_rss(src: dict) -> list[dict]:
         title = e.get("title")
         if not link or not title:
             continue
-        items.append({"title": title, "link": link, "source": src["id"]})
+        description = e.get("summary") or e.get("description") or ""
+        items.append({"title": title, "link": link, "source": src["id"], "description": description})
     return items
 
 
@@ -260,7 +270,12 @@ def fetch_naver_news(src: dict) -> list[dict]:
         title_norm = re.sub(r"<[^>]+>", "", html.unescape(raw_title)).lower()
         if query_words and not all(w in title_norm for w in query_words):
             continue
-        items.append({"title": raw_title, "link": link, "source": src["id"]})
+        items.append({
+            "title": raw_title,
+            "link": link,
+            "source": src["id"],
+            "description": it.get("description", ""),
+        })
     return items
 
 
@@ -358,9 +373,9 @@ def main() -> int:
                 continue
             candidates.append({"item": it, "sig": sig})
 
-    # 2단계: embedding 배치 계산
-    titles_for_embed = [title_clean(c["item"].get("title", "")) for c in candidates]
-    new_embeddings = fetch_embeddings(titles_for_embed) if titles_for_embed else np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+    # 2단계: embedding 배치 계산 (제목 + description 합쳐서 짧은 제목의 매체별 변형 안정화)
+    texts_for_embed = [embed_text(c["item"]) for c in candidates]
+    new_embeddings = fetch_embeddings(texts_for_embed) if texts_for_embed else np.empty((0, EMBEDDING_DIM), dtype=np.float32)
 
     # 3단계: 부트스트랩 모드 — 모두 seen에 기록, 게시 0건
     if is_bootstrap:
