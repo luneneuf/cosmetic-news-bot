@@ -62,14 +62,14 @@ LAKA 코스메틱스 입장에서 주어진 기사 중 가장 중요한 {TARGET_
 4. 안전·규제: {', '.join(priorities['safety'])}
 5. 거시 동향: K-뷰티 수출·M&A·IPO·시장 규모·트렌드
 
-각 선정 기사에 카테고리(자사·경쟁사·채널·안전·동향 중 하나)와 한 줄 사유(20자 이내)를 부여하라.
+각 선정 기사에 카테고리(자사·경쟁사·채널·안전·동향 중 하나)와 기사 내용 요약(100자 내외)을 부여하라.
 해당 카테고리에 기사가 없으면 해당 bucket은 비워도 된다.
 같은 사건·발표를 다룬 기사가 여러 개 있으면 가장 정보가 풍부한 1건만 선정하고 나머지는 제외하라.
 
 응답 형식(JSON):
 {{
   "top": [
-    {{"url": "...", "title": "...", "category": "자사|경쟁사|채널|안전|동향", "reason": "..."}}
+    {{"url": "...", "title": "...", "category": "자사|경쟁사|채널|안전|동향", "summary": "100자 내외 기사 내용 요약"}}
   ]
 }}"""
     user_prompt = "다음 기사 목록:\n" + "\n".join(
@@ -121,10 +121,10 @@ def format_briefing(curated: list[dict], total_count: int) -> str:
         for it in bucket:
             title = it.get("title", "")
             url = it.get("url", "")
-            reason = it.get("reason", "")
+            summary = it.get("summary", "")
             lines.append(f"• <{url}|{title}>")
-            if reason:
-                lines.append(f"  _{reason}_")
+            if summary:
+                lines.append(f"  {summary}")
         lines.append("")
     lines.append(f"📊 raw feed: #cosmetic-news 참고")
     return "\n".join(lines)
