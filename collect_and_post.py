@@ -1,13 +1,13 @@
 """코스메틱 뉴스 → Slack 게시 봇 (OpenAI embedding dedup 버전).
 
 GitHub Actions 워크플로가 호출. 동작:
-1. ./seen_links.json (URL dedup) + seen_titles_embeddings.json (의미 dedup) 로드
+1. ./seen_links.json (URL dedup) + seen_titles_embeddings.json / seen_title_embeddings.json 로드
 2. sources.json의 각 source 폴링 (Naver News API + RSS)
 3. 신규 후보 수집 (URL·blocklist·prefix sig 1차 필터)
-4. OpenAI embedding 배치 호출 → seen embeddings와 cosine similarity 비교
-5. similarity >= 0.85 시 차단 (보도자료 도배 매체별 제목 변형 흡수)
+4. OpenAI embedding 배치 호출 (제목+본문 / 제목 전용 동시) — 이중 채널 dedup
+5. 제목+본문 0.75 OR 제목 전용 0.82 시 차단 (보도자료 도배 + 매체별 제목 변형 흡수)
 6. 통과 항목 Slack 게시 (링크 1줄 + unfurl)
-7. state 갱신 (URL + sig + embedding)
+7. state 갱신 (URL + sig + embedding 두 세트)
 """
 
 from __future__ import annotations
@@ -30,11 +30,14 @@ SOURCES_PATH = Path(__file__).parent / "sources.json"
 BLOCKLIST_PATH = Path(__file__).parent / "blocklist.json"
 KEYWORD_BLOCKLIST_PATH = Path(__file__).parent / "keyword_blocklist.json"
 STATE_PATH = Path("seen_links.json")
-TITLES_PATH = Path("seen_titles.json")           # 짧은 제목 prefix sig fallback
-EMBEDDINGS_PATH = Path("seen_titles_embeddings.json")  # OpenAI embedding dedup
-POSTED_LOG_PATH = Path("posted_log.jsonl")       # 아침 브리핑 봇용 게시 이력
+TITLES_PATH = Path("seen_titles.json")              # 짧은 제목 prefix sig fallback
+EMBEDDINGS_PATH = Path("seen_titles_embeddings.json")  # 제목+본문 embedding dedup
+TITLE_EMBEDDINGS_PATH = Path("seen_title_embeddings.json")  # 제목 전용 embedding dedup (이중 채널)
+POSTED_LOG_PATH = Path("posted_log.jsonl")          # 아침 브리핑 봇용 게시 이력
 
 WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
+LAKA_SLACK_BOT_TOKEN = os.environ.get("LAKA_SLACK_BOT_TOKEN", "").strip()
+LAKA_NEWS_SLACK_CHANNEL = os.environ.get("LAKA_NEWS_SLACK_CHANNEL", "").strip()
 NAVER_ID = os.environ.get("NAVER_CLIENT_ID", "").strip()
 NAVER_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -48,7 +51,8 @@ NAVER_DISPLAY = 30
 TITLE_SIG_LEN = 25
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIM = 512               # 1536 → 512로 축소 (저장·계산 비용 ↓)
-EMBEDDING_THRESHOLD = 0.75        # cosine similarity 0.75+면 중복. 한국어 짧은 보도자료는 매체별 변형으로 0.7~0.78 분포
+EMBEDDING_THRESHOLD = 0.75        # 제목+본문 임계값. 한국어 보도자료 매체별 변형 0.7~0.78 분포
+TITLE_EMBEDDING_THRESHOLD = 0.82  # 제목 전용 임계값. 같은 보도자료 제목은 0.85+ 이므로 여유 있음
 
 
 # ─────────────────────────────────────────────────────────────
@@ -305,23 +309,37 @@ def append_posted_log(item: dict) -> None:
 
 
 def post_text(text: str) -> bool:
-    r = requests.post(
-        WEBHOOK,
-        json={"text": text, "unfurl_links": True, "unfurl_media": True},
-        timeout=10,
-    )
-    if r.status_code != 200:
-        print(f"[WARN] slack post failed: {r.status_code} {r.text[:200]}", file=sys.stderr)
-        return False
-    return True
+    ok = True
+    if WEBHOOK:
+        r = requests.post(
+            WEBHOOK,
+            json={"text": text, "unfurl_links": True, "unfurl_media": True},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            print(f"[WARN] slack post failed: {r.status_code} {r.text[:200]}", file=sys.stderr)
+            ok = False
+    if LAKA_SLACK_BOT_TOKEN and LAKA_NEWS_SLACK_CHANNEL:
+        r = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers={"Authorization": f"Bearer {LAKA_SLACK_BOT_TOKEN}"},
+            json={"channel": LAKA_NEWS_SLACK_CHANNEL, "text": text,
+                  "unfurl_links": True, "unfurl_media": True},
+            timeout=10,
+        )
+        body = r.json() if r.status_code == 200 else {}
+        if not body.get("ok"):
+            print(f"[WARN] laka slack post failed: {body.get('error', r.status_code)}", file=sys.stderr)
+            ok = False
+    return ok
 
 
 # ─────────────────────────────────────────────────────────────
 # Main
 
 def main() -> int:
-    if not WEBHOOK:
-        print("ERROR: SLACK_WEBHOOK_URL not set", file=sys.stderr)
+    if not WEBHOOK and not (LAKA_SLACK_BOT_TOKEN and LAKA_NEWS_SLACK_CHANNEL):
+        print("ERROR: SLACK_WEBHOOK_URL 또는 LAKA_SLACK_BOT_TOKEN+LAKA_NEWS_SLACK_CHANNEL 필요", file=sys.stderr)
         return 1
     if not OPENAI_API_KEY:
         print("ERROR: OPENAI_API_KEY not set", file=sys.stderr)
@@ -333,6 +351,7 @@ def main() -> int:
     seen_urls = load_set(STATE_PATH)
     seen_sigs = load_set(TITLES_PATH)
     seen_embeddings = load_embeddings(EMBEDDINGS_PATH)
+    seen_title_embeddings = load_embeddings(TITLE_EMBEDDINGS_PATH)
     is_bootstrap = len(seen_urls) == 0
 
     # 1단계: 후보 수집 (URL·blocklist·한국어·prefix sig 1차 필터)
@@ -373,9 +392,17 @@ def main() -> int:
                 continue
             candidates.append({"item": it, "sig": sig})
 
-    # 2단계: embedding 배치 계산 (제목 + description 합쳐서 짧은 제목의 매체별 변형 안정화)
+    # 2단계: embedding 배치 계산 — 제목+본문·제목 전용을 한 API 호출로 묶어 처리
+    n = len(candidates)
     texts_for_embed = [embed_text(c["item"]) for c in candidates]
-    new_embeddings = fetch_embeddings(texts_for_embed) if texts_for_embed else np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+    title_texts = [title_clean(c["item"].get("title", "")) for c in candidates]
+    if texts_for_embed:
+        all_vecs = fetch_embeddings(texts_for_embed + title_texts)
+        new_embeddings = all_vecs[:n]
+        new_title_embeddings = all_vecs[n:]
+    else:
+        new_embeddings = np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+        new_title_embeddings = np.empty((0, EMBEDDING_DIM), dtype=np.float32)
 
     # 3단계: 부트스트랩 모드 — 모두 seen에 기록, 게시 0건
     if is_bootstrap:
@@ -385,6 +412,8 @@ def main() -> int:
                 seen_sigs.add(c["sig"])
         if new_embeddings.shape[0] > 0:
             seen_embeddings = np.vstack([seen_embeddings, new_embeddings])
+        if new_title_embeddings.shape[0] > 0:
+            seen_title_embeddings = np.vstack([seen_title_embeddings, new_title_embeddings])
         post_text(
             f":robot_face: cosmetic-news-bot 시작 — {len(candidates)}개 기존 항목 부트스트랩 완료. "
             f"다음 실행부터 신규 항목만 게시합니다."
@@ -392,20 +421,27 @@ def main() -> int:
         save_set(STATE_PATH, seen_urls)
         save_set(TITLES_PATH, seen_sigs)
         save_embeddings(EMBEDDINGS_PATH, seen_embeddings)
+        save_embeddings(TITLE_EMBEDDINGS_PATH, seen_title_embeddings)
         print(f"bootstrap: {len(candidates)} items, {seen_embeddings.shape[0]} embeddings", file=sys.stderr)
         return 0
 
-    # 4단계: embedding dedup
+    # 4단계: 이중 채널 embedding dedup
+    #   채널 A: 제목+본문 @ 0.75 — 보도자료 본문이 유사한 경우
+    #   채널 B: 제목 전용  @ 0.82 — 본문이 달라도 제목이 같은 경우 (이번 버그 케이스)
     new_items: list[dict] = []
     dup_emb_count = 0
     accepted_embeddings: list[np.ndarray] = []
-    for c, vec in zip(candidates, new_embeddings):
-        if is_dup_by_embedding(vec, seen_embeddings):
+    accepted_title_embeddings: list[np.ndarray] = []
+    for c, vec, title_vec in zip(candidates, new_embeddings, new_title_embeddings):
+        if (is_dup_by_embedding(vec, seen_embeddings)
+                or is_dup_by_embedding(title_vec, seen_title_embeddings, TITLE_EMBEDDING_THRESHOLD)):
             seen_urls.add(c["item"]["link"])
             dup_emb_count += 1
             continue
-        # 같은 batch 안에서도 dedup (한 cron에서 보도자료가 여러 매체에 들어온 case)
-        if accepted_embeddings and is_dup_by_embedding(vec, np.array(accepted_embeddings)):
+        # 같은 batch 안에서도 dedup
+        if ((accepted_embeddings and is_dup_by_embedding(vec, np.array(accepted_embeddings)))
+                or (accepted_title_embeddings and is_dup_by_embedding(
+                    title_vec, np.array(accepted_title_embeddings), TITLE_EMBEDDING_THRESHOLD))):
             seen_urls.add(c["item"]["link"])
             dup_emb_count += 1
             continue
@@ -414,9 +450,12 @@ def main() -> int:
         if c["sig"]:
             seen_sigs.add(c["sig"])
         accepted_embeddings.append(vec)
+        accepted_title_embeddings.append(title_vec)
 
     if accepted_embeddings:
         seen_embeddings = np.vstack([seen_embeddings, np.array(accepted_embeddings)])
+    if accepted_title_embeddings:
+        seen_title_embeddings = np.vstack([seen_title_embeddings, np.array(accepted_title_embeddings)])
 
     # 5단계: Slack 게시 (MAX_PER_RUN cap + rate limit)
     to_post = new_items[:MAX_PER_RUN]
@@ -434,6 +473,7 @@ def main() -> int:
     save_set(STATE_PATH, seen_urls)
     save_set(TITLES_PATH, seen_sigs)
     save_embeddings(EMBEDDINGS_PATH, seen_embeddings)
+    save_embeddings(TITLE_EMBEDDINGS_PATH, seen_title_embeddings)
     print(
         f"new={len(new_items)} posted={posted} overflow={overflow} "
         f"blocked={blocked_count} kw_blocked={keyword_blocked_count} "

@@ -34,15 +34,16 @@ jobs:
             seen_links.json
             seen_titles.json
             seen_titles_embeddings.json
+            seen_title_embeddings.json
             posted_log.jsonl
-          # v6: posted_log.jsonl 추가 (아침 브리핑 봇 데이터 소스)
-          key: news-bot-seen-v6-${{ github.run_id }}-${{ github.run_attempt }}
+          # v7: seen_title_embeddings.json 추가 (제목 전용 이중 채널 dedup)
+          key: news-bot-seen-v7-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            news-bot-seen-v6-
+            news-bot-seen-v7-
 
       - name: Init empty state if cache miss
         run: |
-          for f in seen_links.json seen_titles.json seen_titles_embeddings.json; do
+          for f in seen_links.json seen_titles.json seen_titles_embeddings.json seen_title_embeddings.json; do
             if [ ! -f "$f" ]; then
               echo '[]' > "$f"
               echo "$f: initialized empty"
@@ -68,6 +69,8 @@ jobs:
       - name: Collect and post
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          LAKA_SLACK_BOT_TOKEN: ${{ secrets.LAKA_SLACK_BOT_TOKEN }}
+          LAKA_NEWS_SLACK_CHANNEL: ${{ secrets.LAKA_NEWS_SLACK_CHANNEL }}
           NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -81,5 +84,6 @@ jobs:
             seen_links.json
             seen_titles.json
             seen_titles_embeddings.json
+            seen_title_embeddings.json
             posted_log.jsonl
-          key: news-bot-seen-v6-${{ github.run_id }}-${{ github.run_attempt }}
+          key: news-bot-seen-v7-${{ github.run_id }}-${{ github.run_attempt }}
