@@ -16,8 +16,16 @@ import requests
 
 POSTED_LOG_PATH = Path("posted_log.jsonl")
 PRIORITIES_PATH = Path(__file__).parent / "priorities.json"
-BRIEFING_WEBHOOK = os.environ.get("BRIEFING_SLACK_WEBHOOK_URL", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+
+# 게시할 Slack Webhook 목록 — 비어있는 항목은 무시
+BRIEFING_WEBHOOKS: list[str] = [
+    url for url in [
+        os.environ.get("BRIEFING_SLACK_WEBHOOK_URL", "").strip(),
+        os.environ.get("LAKA_BRIEFING_SLACK_WEBHOOK_URL", "").strip(),
+    ]
+    if url
+]
 
 LOOKBACK_HOURS = 24
 TARGET_COUNT = 10
@@ -131,17 +139,18 @@ def format_briefing(curated: list[dict], total_count: int) -> str:
 
 
 def post_to_slack(text: str) -> None:
-    r = requests.post(
-        BRIEFING_WEBHOOK,
-        json={"text": text, "unfurl_links": False, "unfurl_media": False},
-        timeout=10,
-    )
-    r.raise_for_status()
+    for webhook in BRIEFING_WEBHOOKS:
+        r = requests.post(
+            webhook,
+            json={"text": text, "unfurl_links": False, "unfurl_media": False},
+            timeout=10,
+        )
+        r.raise_for_status()
 
 
 def main() -> int:
-    if not BRIEFING_WEBHOOK:
-        print("ERROR: BRIEFING_SLACK_WEBHOOK_URL not set", file=sys.stderr)
+    if not BRIEFING_WEBHOOKS:
+        print("ERROR: BRIEFING_SLACK_WEBHOOK_URL (or LAKA_BRIEFING_SLACK_WEBHOOK_URL) not set", file=sys.stderr)
         return 1
     if not OPENAI_API_KEY:
         print("ERROR: OPENAI_API_KEY not set", file=sys.stderr)
