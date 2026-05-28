@@ -56,6 +56,7 @@ jobs:
       - name: Run briefing
         env:
           BRIEFING_SLACK_WEBHOOK_URL: ${{ secrets.BRIEFING_SLACK_WEBHOOK_URL }}
-          LAKA_BRIEFING_SLACK_WEBHOOK_URL: ${{ secrets.LAKA_BRIEFING_SLACK_WEBHOOK_URL }}
+          LAKA_SLACK_BOT_TOKEN: ${{ secrets.LAKA_SLACK_BOT_TOKEN }}
+          LAKA_SLACK_CHANNEL: ${{ secrets.LAKA_SLACK_CHANNEL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python briefing.py

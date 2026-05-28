@@ -18,14 +18,12 @@ POSTED_LOG_PATH = Path("posted_log.jsonl")
 PRIORITIES_PATH = Path(__file__).parent / "priorities.json"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 
-# 게시할 Slack Webhook 목록 — 비어있는 항목은 무시
-BRIEFING_WEBHOOKS: list[str] = [
-    url for url in [
-        os.environ.get("BRIEFING_SLACK_WEBHOOK_URL", "").strip(),
-        os.environ.get("LAKA_BRIEFING_SLACK_WEBHOOK_URL", "").strip(),
-    ]
-    if url
-]
+# ── Slack 게시 대상 ──────────────────────────────────────────
+# 방식 A: Incoming Webhook URL (개인 워크스페이스 등)
+BRIEFING_WEBHOOK = os.environ.get("BRIEFING_SLACK_WEBHOOK_URL", "").strip()
+# 방식 B: Bot Token + Channel (Laka 워크스페이스 — chat:write.public 스코프 필요)
+LAKA_SLACK_BOT_TOKEN = os.environ.get("LAKA_SLACK_BOT_TOKEN", "").strip()
+LAKA_SLACK_CHANNEL = os.environ.get("LAKA_SLACK_CHANNEL", "#cosmetic-news-briefing").strip()
 
 LOOKBACK_HOURS = 24
 TARGET_COUNT = 10
@@ -139,18 +137,33 @@ def format_briefing(curated: list[dict], total_count: int) -> str:
 
 
 def post_to_slack(text: str) -> None:
-    for webhook in BRIEFING_WEBHOOKS:
+    # 방식 A: Incoming Webhook
+    if BRIEFING_WEBHOOK:
         r = requests.post(
-            webhook,
+            BRIEFING_WEBHOOK,
             json={"text": text, "unfurl_links": False, "unfurl_media": False},
             timeout=10,
         )
         r.raise_for_status()
 
+    # 방식 B: Bot Token (chat:write.public)
+    if LAKA_SLACK_BOT_TOKEN:
+        r = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers={"Authorization": f"Bearer {LAKA_SLACK_BOT_TOKEN}"},
+            json={"channel": LAKA_SLACK_CHANNEL, "text": text,
+                  "unfurl_links": False, "unfurl_media": False},
+            timeout=10,
+        )
+        r.raise_for_status()
+        body = r.json()
+        if not body.get("ok"):
+            raise RuntimeError(f"Slack API error: {body.get('error')}")
+
 
 def main() -> int:
-    if not BRIEFING_WEBHOOKS:
-        print("ERROR: BRIEFING_SLACK_WEBHOOK_URL (or LAKA_BRIEFING_SLACK_WEBHOOK_URL) not set", file=sys.stderr)
+    if not BRIEFING_WEBHOOK and not LAKA_SLACK_BOT_TOKEN:
+        print("ERROR: BRIEFING_SLACK_WEBHOOK_URL 또는 LAKA_SLACK_BOT_TOKEN 중 하나는 설정해야 합니다", file=sys.stderr)
         return 1
     if not OPENAI_API_KEY:
         print("ERROR: OPENAI_API_KEY not set", file=sys.stderr)
