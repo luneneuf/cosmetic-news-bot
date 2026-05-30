@@ -31,10 +31,11 @@ jobs:
             seen_links.json
             seen_titles.json
             seen_titles_embeddings.json
+            seen_title_embeddings.json
             posted_log.jsonl
-          key: news-bot-seen-v6-${{ github.run_id }}
+          key: news-bot-seen-v7-${{ github.run_id }}
           restore-keys: |
-            news-bot-seen-v6-
+            news-bot-seen-v7-
 
       - name: Check posted_log
         run: |
