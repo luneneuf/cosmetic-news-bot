@@ -52,7 +52,7 @@ TITLE_SIG_LEN = 25
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIM = 512               # 1536 → 512로 축소 (저장·계산 비용 ↓)
 EMBEDDING_THRESHOLD = 0.75        # 제목+본문 임계값. 한국어 보도자료 매체별 변형 0.7~0.78 분포
-TITLE_EMBEDDING_THRESHOLD = 0.82  # 제목 전용 임계값. 같은 보도자료 제목은 0.85+ 이므로 여유 있음
+TITLE_EMBEDDING_THRESHOLD = 0.78  # 제목 전용 임계값. 같은 사건 다른 제목(언론사별 변형) 흡수용
 
 
 # ─────────────────────────────────────────────────────────────
@@ -231,6 +231,30 @@ def is_dup_by_embedding(new_vec: np.ndarray, seen_matrix: np.ndarray, threshold:
         return False
     sims = seen_matrix @ new_vec  # 둘 다 정규화돼 있어 dot = cosine
     return bool((sims >= threshold).any())
+
+
+def title_keywords(title: str) -> set[str]:
+    """제목에서 3글자 이상 단어만 추출 (조사·단음절 제거)."""
+    t = html.unescape(title)
+    t = re.sub(r"<[^>]+>", "", t)
+    t = re.sub(r"[^\w\s]", " ", t)
+    return {w for w in t.split() if len(w) >= 3}
+
+
+def is_dup_by_keywords(new_title: str, seen_titles: list[str], threshold: float = 0.4) -> bool:
+    """Jaccard(핵심어 집합) >= threshold 이면 중복으로 판정."""
+    kw_new = title_keywords(new_title)
+    if not kw_new:
+        return False
+    for seen in seen_titles:
+        kw_seen = title_keywords(seen)
+        if not kw_seen:
+            continue
+        inter = len(kw_new & kw_seen)
+        union = len(kw_new | kw_seen)
+        if union and inter / union >= threshold:
+            return True
+    return False
 
 
 # ─────────────────────────────────────────────────────────────
@@ -425,23 +449,27 @@ def main() -> int:
         print(f"bootstrap: {len(candidates)} items, {seen_embeddings.shape[0]} embeddings", file=sys.stderr)
         return 0
 
-    # 4단계: 이중 채널 embedding dedup
+    # 4단계: 이중 채널 embedding dedup + 제목 핵심어 Jaccard dedup
     #   채널 A: 제목+본문 @ 0.75 — 보도자료 본문이 유사한 경우
-    #   채널 B: 제목 전용  @ 0.82 — 본문이 달라도 제목이 같은 경우 (이번 버그 케이스)
+    #   채널 B: 제목 전용  @ 0.78 — 본문이 달라도 제목이 같은 경우
+    #   채널 C: 제목 핵심어 Jaccard @ 0.40 — 같은 사건 다른 표현 (언론사별 제목 변형)
     new_items: list[dict] = []
     dup_emb_count = 0
     accepted_embeddings: list[np.ndarray] = []
     accepted_title_embeddings: list[np.ndarray] = []
+    accepted_titles: list[str] = []  # 키워드 dedup용
     for c, vec, title_vec in zip(candidates, new_embeddings, new_title_embeddings):
+        title = c["item"].get("title", "")
         if (is_dup_by_embedding(vec, seen_embeddings)
                 or is_dup_by_embedding(title_vec, seen_title_embeddings, TITLE_EMBEDDING_THRESHOLD)):
             seen_urls.add(c["item"]["link"])
             dup_emb_count += 1
             continue
-        # 같은 batch 안에서도 dedup
+        # 같은 batch 안에서도 dedup (embedding + 키워드)
         if ((accepted_embeddings and is_dup_by_embedding(vec, np.array(accepted_embeddings)))
                 or (accepted_title_embeddings and is_dup_by_embedding(
-                    title_vec, np.array(accepted_title_embeddings), TITLE_EMBEDDING_THRESHOLD))):
+                    title_vec, np.array(accepted_title_embeddings), TITLE_EMBEDDING_THRESHOLD))
+                or is_dup_by_keywords(title, accepted_titles)):
             seen_urls.add(c["item"]["link"])
             dup_emb_count += 1
             continue
@@ -451,6 +479,7 @@ def main() -> int:
             seen_sigs.add(c["sig"])
         accepted_embeddings.append(vec)
         accepted_title_embeddings.append(title_vec)
+        accepted_titles.append(title)
 
     if accepted_embeddings:
         seen_embeddings = np.vstack([seen_embeddings, np.array(accepted_embeddings)])
