@@ -33,6 +33,7 @@ STATE_PATH = Path("seen_links.json")
 TITLES_PATH = Path("seen_titles.json")              # 짧은 제목 prefix sig fallback
 EMBEDDINGS_PATH = Path("seen_titles_embeddings.json")  # 제목+본문 embedding dedup
 TITLE_EMBEDDINGS_PATH = Path("seen_title_embeddings.json")  # 제목 전용 embedding dedup (이중 채널)
+TITLE_LIST_PATH = Path("seen_titles_list.json")     # 제목 전체 목록 — 키워드 Jaccard dedup (실행 간 유지)
 POSTED_LOG_PATH = Path("posted_log.jsonl")          # 아침 브리핑 봇용 게시 이력
 
 WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
@@ -170,6 +171,21 @@ def save_set(path: Path, s: set[str]) -> None:
     if len(arr) > SEEN_CAP:
         arr = arr[-SEEN_CAP:]
     path.write_text(json.dumps(arr, ensure_ascii=False), encoding="utf-8")
+
+
+def load_titles_list(path: Path, cap: int = 2000) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data[-cap:] if len(data) > cap else data
+    except Exception as e:
+        print(f"[WARN] {path.name} unreadable: {e}", file=sys.stderr)
+        return []
+
+
+def save_titles_list(path: Path, titles: list[str], cap: int = 2000) -> None:
+    path.write_text(json.dumps(titles[-cap:], ensure_ascii=False), encoding="utf-8")
 
 
 def load_embeddings(path: Path) -> np.ndarray:
@@ -376,6 +392,7 @@ def main() -> int:
     seen_sigs = load_set(TITLES_PATH)
     seen_embeddings = load_embeddings(EMBEDDINGS_PATH)
     seen_title_embeddings = load_embeddings(TITLE_EMBEDDINGS_PATH)
+    seen_titles_list = load_titles_list(TITLE_LIST_PATH)
     is_bootstrap = len(seen_urls) == 0
 
     # 1단계: 후보 수집 (URL·blocklist·한국어·prefix sig 1차 필터)
@@ -457,19 +474,19 @@ def main() -> int:
     dup_emb_count = 0
     accepted_embeddings: list[np.ndarray] = []
     accepted_title_embeddings: list[np.ndarray] = []
-    accepted_titles: list[str] = []  # 키워드 dedup용
     for c, vec, title_vec in zip(candidates, new_embeddings, new_title_embeddings):
         title = c["item"].get("title", "")
         if (is_dup_by_embedding(vec, seen_embeddings)
-                or is_dup_by_embedding(title_vec, seen_title_embeddings, TITLE_EMBEDDING_THRESHOLD)):
+                or is_dup_by_embedding(title_vec, seen_title_embeddings, TITLE_EMBEDDING_THRESHOLD)
+                or is_dup_by_keywords(title, seen_titles_list)):
             seen_urls.add(c["item"]["link"])
             dup_emb_count += 1
             continue
-        # 같은 batch 안에서도 dedup (embedding + 키워드)
+        # 같은 batch 안에서도 dedup
         if ((accepted_embeddings and is_dup_by_embedding(vec, np.array(accepted_embeddings)))
                 or (accepted_title_embeddings and is_dup_by_embedding(
                     title_vec, np.array(accepted_title_embeddings), TITLE_EMBEDDING_THRESHOLD))
-                or is_dup_by_keywords(title, accepted_titles)):
+                or is_dup_by_keywords(title, seen_titles_list)):
             seen_urls.add(c["item"]["link"])
             dup_emb_count += 1
             continue
@@ -479,7 +496,7 @@ def main() -> int:
             seen_sigs.add(c["sig"])
         accepted_embeddings.append(vec)
         accepted_title_embeddings.append(title_vec)
-        accepted_titles.append(title)
+        seen_titles_list.append(title)
 
     if accepted_embeddings:
         seen_embeddings = np.vstack([seen_embeddings, np.array(accepted_embeddings)])
@@ -503,6 +520,7 @@ def main() -> int:
     save_set(TITLES_PATH, seen_sigs)
     save_embeddings(EMBEDDINGS_PATH, seen_embeddings)
     save_embeddings(TITLE_EMBEDDINGS_PATH, seen_title_embeddings)
+    save_titles_list(TITLE_LIST_PATH, seen_titles_list)
     print(
         f"new={len(new_items)} posted={posted} overflow={overflow} "
         f"blocked={blocked_count} kw_blocked={keyword_blocked_count} "

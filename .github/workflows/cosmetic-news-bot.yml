@@ -35,15 +35,16 @@ jobs:
             seen_titles.json
             seen_titles_embeddings.json
             seen_title_embeddings.json
+            seen_titles_list.json
             posted_log.jsonl
-          # v7: seen_title_embeddings.json 추가 (제목 전용 이중 채널 dedup)
-          key: news-bot-seen-v7-${{ github.run_id }}-${{ github.run_attempt }}
+          # v8: seen_titles_list.json 추가 (제목 키워드 Jaccard dedup 실행 간 유지)
+          key: news-bot-seen-v8-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            news-bot-seen-v7-
+            news-bot-seen-v8-
 
       - name: Init empty state if cache miss
         run: |
-          for f in seen_links.json seen_titles.json seen_titles_embeddings.json seen_title_embeddings.json; do
+          for f in seen_links.json seen_titles.json seen_titles_embeddings.json seen_title_embeddings.json seen_titles_list.json; do
             if [ ! -f "$f" ]; then
               echo '[]' > "$f"
               echo "$f: initialized empty"
@@ -85,5 +86,6 @@ jobs:
             seen_titles.json
             seen_titles_embeddings.json
             seen_title_embeddings.json
+            seen_titles_list.json
             posted_log.jsonl
-          key: news-bot-seen-v7-${{ github.run_id }}-${{ github.run_attempt }}
+          key: news-bot-seen-v8-${{ github.run_id }}-${{ github.run_attempt }}
