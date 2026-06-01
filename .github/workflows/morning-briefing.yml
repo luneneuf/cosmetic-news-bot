@@ -33,9 +33,9 @@ jobs:
             seen_titles_embeddings.json
             seen_title_embeddings.json
             posted_log.jsonl
-          key: news-bot-seen-v7-${{ github.run_id }}
+          key: news-bot-seen-v8-${{ github.run_id }}
           restore-keys: |
-            news-bot-seen-v7-
+            news-bot-seen-v8-
 
       - name: Check posted_log
         run: |
