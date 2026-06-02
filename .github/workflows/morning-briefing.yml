@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 23 * * 0-4'   # UTC 일~목 23:00 = KST 월~금 08:00
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Slack 미게시 — 로그로만 결과 확인'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -59,4 +64,5 @@ jobs:
           LAKA_SLACK_BOT_TOKEN: ${{ secrets.LAKA_SLACK_BOT_TOKEN }}
           LAKA_SLACK_CHANNEL: ${{ secrets.LAKA_SLACK_CHANNEL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BRIEFING_DRY_RUN: ${{ inputs.dry_run }}
         run: python briefing.py

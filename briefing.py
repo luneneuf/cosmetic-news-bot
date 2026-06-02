@@ -24,6 +24,9 @@ BRIEFING_WEBHOOK = os.environ.get("BRIEFING_SLACK_WEBHOOK_URL", "").strip()
 LAKA_SLACK_BOT_TOKEN = os.environ.get("LAKA_SLACK_BOT_TOKEN", "").strip()
 LAKA_SLACK_CHANNEL = os.environ.get("LAKA_SLACK_CHANNEL", "#cosmetic-news-briefing").strip()
 
+# 드라이런 — Slack에 게시하지 않고 결과만 로그 출력 (1/true/yes)
+DRY_RUN = os.environ.get("BRIEFING_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+
 LOOKBACK_HOURS = 24
 TARGET_COUNT = 10
 MAX_ROUNDS = 3
@@ -169,19 +172,24 @@ def review(candidates: list[dict], already_approved: list[dict]) -> dict:
 
     system_prompt = """너는 코스메틱 뉴스 편집장이다. 큐레이터가 고른 기사를 검수한다.
 
-[검수 규칙]
-1. 서로 다른 이벤트의 기사는 모두 승인하라. 중복이 아니면 통과시킨다.
-2. 이미 승인된 기사와 동일 이벤트인 기사만 거절.
-3. 이번 후보 내에서 동일 이벤트가 여러 개면 가장 정보가 풍부한 1건만 승인하고 나머지는 거절.
-   동일 이벤트 판단: (주체 기업·인물) + (핵심 사건)이 같으면 동일. 단지 같은 업계·같은 채널이라는 이유로 동일 취급하지 말 것.
+[동일 이벤트 판단 — 제목과 본문 요약을 모두 근거로]
+- 제목만 보지 말고 각 기사의 '요약' 내용까지 읽고 같은 사안을 다루는지 판단하라.
+- (주체 기업·인물) + (핵심 사건/스토리라인)이 같으면 동일 이벤트다.
+- 같은 기업의 같은 흐름이면 세부 각도가 달라도 동일 이벤트로 본다.
+  예: "CJ올리브영 미국 1호점 흥행"과 "올리브영 미국 2호점 출점 예정"은
+      둘 다 'CJ올리브영 미국 진출·확장'이라는 한 스토리 → 동일 이벤트, 1건만.
+- 단, 서로 다른 기업의 서로 다른 신제품·입점·계약은 모두 별개 이벤트다 (과도하게 묶지 말 것).
 
-[중요] 과도하게 거절하지 마라. 서로 다른 기업의 서로 다른 신제품·입점·계약은 모두 별개 이벤트다.
+[검수 규칙]
+1. 서로 다른 이벤트의 기사는 모두 승인.
+2. 이미 승인된 기사와 동일 이벤트면 거절.
+3. 이번 후보 내에서 동일 이벤트가 여러 개면 가장 정보가 풍부한 1건만 승인.
 
 [feedback_for_curator 작성법]
 - 거절한 이벤트마다 1줄: "{이벤트 설명} — 이미 처리됨, 관련 기사 전부 제외할 것"
 
 [satisfied]
-- approved를 합쳐 충분히 다양한 기사가 모였다고 판단되면 true, 아니면 false.
+- approved를 합쳐 충분히 다양한 기사가 모였으면 true, 아니면 false.
 
 응답 형식(JSON):
 {
@@ -192,8 +200,11 @@ def review(candidates: list[dict], already_approved: list[dict]) -> dict:
 
     user_prompt = (
         f"이미 승인된 기사:\n{already_block}\n\n"
-        "이번 라운드 후보:\n"
-        + "\n".join(f"- {c['title']} ({c['url']})" for c in candidates)
+        "이번 라운드 후보 (제목 + 요약):\n"
+        + "\n".join(
+            f"- {c.get('title','')}\n  요약: {c.get('summary','')}\n  ({c.get('url','')})"
+            for c in candidates
+        )
     )
 
     try:
@@ -291,19 +302,23 @@ def final_review(selection: list[dict]) -> dict:
 
     system_prompt = """너는 코스메틱 뉴스 편집장이다. 게시 직전 최종 검수를 한다.
 
-[검수 항목]
-1. 목록 안에 동일 이벤트(같은 기업·인물의 같은 사건)를 다룬 기사가 2건 이상 있는가?
-   있으면 가장 정보가 풍부한 1건만 남기고 approved에서 제외한다.
-   동일 이벤트 판단: (주체 기업·인물) + (핵심 사건)이 같으면 동일.
-   단지 같은 업계·같은 채널이라는 이유로 동일 취급하지 말 것.
-2. 중복을 모두 제거한 결과가 게시하기에 적절한가?
+[동일 이벤트 판단 — 제목과 본문 요약을 모두 근거로]
+- 제목만 보지 말고 각 기사의 '요약' 내용까지 읽고 같은 사안인지 판단하라.
+- (주체 기업·인물) + (핵심 사건/스토리라인)이 같으면 동일 이벤트.
+- 같은 기업의 같은 흐름이면 세부 각도가 달라도 동일 이벤트로 묶는다.
+  예: "CJ올리브영 미국 1호점 흥행"과 "올리브영 미국 2호점 출점 예정"은
+      둘 다 'CJ올리브영 미국 진출·확장' 한 스토리 → 동일 이벤트, 1건만 남긴다.
+- 단, 서로 다른 기업의 서로 다른 신제품·입점·계약은 모두 별개 이벤트다.
+
+[검수 절차]
+1. 목록에서 동일 이벤트가 2건 이상이면 가장 정보가 풍부한 1건만 남기고 approved에서 제외.
+2. 제거 후 approved에 동일 이벤트가 하나도 없도록 만든다.
 
 [passed 판정]
 - approved에 중복 이벤트가 전혀 없으면 passed=true.
-- 중복이 있었다면 제거 후에도, 남은 기사가 서로 모두 다른 이벤트면 passed=true.
 
 [issues 작성]
-- 제거한 중복 이벤트마다 1줄로 사유 기록.
+- 제거한 중복마다 1줄로 사유 기록.
 
 응답 형식(JSON):
 {
@@ -312,8 +327,9 @@ def final_review(selection: list[dict]) -> dict:
   "issues": ["..."]
 }"""
 
-    user_prompt = "최종 선정 목록:\n" + "\n".join(
-        f"- [{c.get('category','')}] {c.get('title','')} ({c.get('url','')})" for c in selection
+    user_prompt = "최종 선정 목록 (제목 + 요약):\n" + "\n".join(
+        f"- [{c.get('category','')}] {c.get('title','')}\n  요약: {c.get('summary','')}\n  ({c.get('url','')})"
+        for c in selection
     )
 
     try:
@@ -444,6 +460,13 @@ def main() -> int:
         return 1
 
     text = format_briefing(final, len(items))
+
+    if DRY_RUN:
+        print("===== DRY RUN — Slack 미게시, 결과 미리보기 =====", file=sys.stderr)
+        print(text, file=sys.stderr)
+        print(f"===== DRY RUN END — {len(final)} items =====", file=sys.stderr)
+        return 0
+
     post_to_slack(text)
     print(f"briefing posted: {len(final)} items", file=sys.stderr)
     return 0
