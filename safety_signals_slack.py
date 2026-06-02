@@ -1,10 +1,12 @@
-"""안전관리 시그널 → #cosmetic-briefing Slack 발신기.
+"""안전관리 시그널 → Slack 발신기.
 
 사용:
     python safety_signals_slack.py <new_items.json 경로>
 
-환경변수:
-    BRIEFING_SLACK_WEBHOOK_URL  (#cosmetic-briefing 로 연결된 Incoming Webhook)
+발신 대상 (설정된 것 모두로 발신):
+    BRIEFING_SLACK_WEBHOOK_URL  개인 워크스페이스 #cosmetic-briefing Incoming Webhook
+    LAKA_SLACK_BOT_TOKEN        LAKA 워크스페이스 Bot Token (chat:write.public)
+    LAKA_SAFETY_SLACK_CHANNEL   LAKA 발신 채널 (기본 #qa-인허가-법규)
 
 stdlib만 사용 (requests 불필요) — scheduled task 격리 환경에서도 동작.
 
@@ -27,8 +29,11 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-# #cosmetic-briefing
-WEBHOOK_LAKA = os.environ.get("BRIEFING_SLACK_WEBHOOK_URL", "").strip()
+# 개인 워크스페이스 #cosmetic-briefing (Incoming Webhook)
+WEBHOOK_PERSONAL = os.environ.get("BRIEFING_SLACK_WEBHOOK_URL", "").strip()
+# LAKA 워크스페이스 (Bot Token)
+LAKA_BOT_TOKEN = os.environ.get("LAKA_SLACK_BOT_TOKEN", "").strip()
+LAKA_CHANNEL = os.environ.get("LAKA_SAFETY_SLACK_CHANNEL", "#qa-인허가-법규").strip()
 
 SOURCE_LABELS: dict[str, str] = {
     "kcia_notice_html":  "KCIA-공지",
@@ -132,7 +137,7 @@ def build_message(items: list[dict], run_date: str) -> str:
     return msg
 
 
-def post_to_slack(webhook: str, text: str) -> None:
+def post_to_webhook(webhook: str, text: str) -> None:
     """urllib.request로 Slack Incoming Webhook POST. 실패 시 예외 발생."""
     payload = json.dumps({"text": text}).encode("utf-8")
     req = Request(
@@ -147,13 +152,36 @@ def post_to_slack(webhook: str, text: str) -> None:
             raise URLError(f"HTTP {resp.status}: {body}")
 
 
+def post_via_bot_token(token: str, channel: str, text: str) -> None:
+    """Slack chat.postMessage (Bot Token). 실패 시 예외 발생."""
+    payload = json.dumps({
+        "channel": channel,
+        "text": text,
+        "unfurl_links": False,
+        "unfurl_media": False,
+    }).encode("utf-8")
+    req = Request(
+        "https://slack.com/api/chat.postMessage",
+        data=payload,
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=10) as resp:
+        body = json.loads(resp.read().decode("utf-8", errors="replace"))
+        if not body.get("ok"):
+            raise URLError(f"Slack API error: {body.get('error')}")
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("usage: safety_signals_slack.py <new_items.json>", file=sys.stderr)
         return 1
 
-    if not WEBHOOK_LAKA:
-        print("ERROR: BRIEFING_SLACK_WEBHOOK_URL not set", file=sys.stderr)
+    if not WEBHOOK_PERSONAL and not LAKA_BOT_TOKEN:
+        print("ERROR: BRIEFING_SLACK_WEBHOOK_URL 또는 LAKA_SLACK_BOT_TOKEN 중 하나는 필요", file=sys.stderr)
         return 1
 
     path = Path(sys.argv[1])
@@ -179,14 +207,30 @@ def main() -> int:
 
     msg = build_message(items, run_date)
 
-    try:
-        post_to_slack(WEBHOOK_LAKA, msg)
-    except Exception as e:
-        print(f"ERROR: Slack 발신 실패 — {e}", file=sys.stderr)
-        return 1
+    sent: list[str] = []
+    failed: list[str] = []
 
-    print(f"Slack 발신 완료 — {len(items)}건 → #cosmetic-briefing", file=sys.stderr)
-    return 0
+    if WEBHOOK_PERSONAL:
+        try:
+            post_to_webhook(WEBHOOK_PERSONAL, msg)
+            sent.append("#cosmetic-briefing(개인)")
+        except Exception as e:
+            failed.append(f"개인 webhook: {e}")
+
+    if LAKA_BOT_TOKEN:
+        try:
+            post_via_bot_token(LAKA_BOT_TOKEN, LAKA_CHANNEL, msg)
+            sent.append(f"{LAKA_CHANNEL}(LAKA)")
+        except Exception as e:
+            failed.append(f"LAKA bot token: {e}")
+
+    if sent:
+        print(f"Slack 발신 완료 — {len(items)}건 → {', '.join(sent)}", file=sys.stderr)
+    for f in failed:
+        print(f"ERROR: Slack 발신 실패 — {f}", file=sys.stderr)
+
+    # 일부라도 성공하면 0, 전부 실패면 1
+    return 0 if sent else 1
 
 
 if __name__ == "__main__":
