@@ -36,6 +36,8 @@ jobs:
           key: news-bot-seen-v8-${{ github.run_id }}
           restore-keys: |
             news-bot-seen-v8-
+            news-bot-seen-v7-
+            news-bot-seen-v6-
 
       - name: Check posted_log
         run: |
