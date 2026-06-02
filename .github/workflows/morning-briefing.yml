@@ -24,13 +24,20 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Restore posted_log (독립 캐시 — state 버전 무관)
+      - name: Restore posted_log (독립 캐시 → v8 state 폴백)
         uses: actions/cache/restore@v4
         with:
-          path: posted_log.jsonl
+          path: |
+            posted_log.jsonl
+            seen_links.json
+            seen_titles.json
+            seen_titles_embeddings.json
+            seen_title_embeddings.json
+            seen_titles_list.json
           key: news-bot-posted-log-${{ github.run_id }}
           restore-keys: |
             news-bot-posted-log-
+            news-bot-seen-v8-
 
       - name: Check posted_log
         run: |
