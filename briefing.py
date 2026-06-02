@@ -8,6 +8,7 @@ Top 10 선정 후 Slack에 카테고리 묶음 형식으로 게시.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -43,6 +44,11 @@ MODEL = "gpt-4o-mini"
 REVIEW_WINDOW_DAYS = 7         # 최근 N일 분포를 본다
 CONCENTRATION_THRESHOLD = 0.6  # 한 카테고리가 기간 내 60%+면 편중 경고
 STARVATION_MIN_RUNS = 5        # 최소 N회 이상 기록이 쌓였을 때만 공백 판정
+
+# 결정론적 중복 게이트 (LLM 리뷰어가 놓친 near-dup을 임베딩으로 차단)
+EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_DIM = 512
+DEDUP_THRESHOLD = float(os.environ.get("BRIEFING_DEDUP_THRESHOLD", "0.86"))
 KST = timezone(timedelta(hours=9))
 
 CAT_ORDER = ["자사", "경쟁사", "채널", "안전", "동향"]
@@ -295,6 +301,77 @@ def curator_reviewer_loop(items: list[dict], extra_lessons: list[str] | None = N
 
 
 # ─────────────────────────────────────────────────────────────
+# 결정론적 중복 게이트 (HARD) — 임베딩 cosine 기반, LLM 판단과 독립
+
+def _embed_texts(texts: list[str]) -> list[list[float]]:
+    """OpenAI 임베딩 → L2 정규화된 벡터 리스트. (numpy 없이 순수 파이썬)"""
+    r = requests.post(
+        "https://api.openai.com/v1/embeddings",
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+        json={"input": texts, "model": EMBEDDING_MODEL, "dimensions": EMBEDDING_DIM},
+        timeout=30,
+    )
+    r.raise_for_status()
+    out: list[list[float]] = []
+    for d in r.json()["data"]:
+        v = d["embedding"]
+        norm = math.sqrt(sum(x * x for x in v)) or 1.0
+        out.append([x / norm for x in v])
+    return out
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """정규화된 벡터 가정 — dot product = cosine."""
+    return sum(x * y for x, y in zip(a, b))
+
+
+def dedup_by_vectors(
+    items: list[dict], vectors: list[list[float]], threshold: float = DEDUP_THRESHOLD
+) -> tuple[list[dict], list[dict]]:
+    """벡터 유사도로 near-dup 제거 (순수 함수 — 오프라인 테스트 가능).
+
+    앞에서부터 유지하며, 이미 유지된 항목과 cosine >= threshold면 중복으로 드롭.
+    반환: (유지 목록, 제거 내역[{dropped, dup_of, sim}])
+    """
+    kept: list[dict] = []
+    kept_vecs: list[list[float]] = []
+    removed: list[dict] = []
+    for it, v in zip(items, vectors):
+        dup_of, sim = None, 0.0
+        for k_it, k_v in zip(kept, kept_vecs):
+            s = _cosine(v, k_v)
+            if s >= threshold:
+                dup_of, sim = k_it, s
+                break
+        if dup_of is None:
+            kept.append(it)
+            kept_vecs.append(v)
+        else:
+            removed.append({
+                "dropped": it.get("title", ""),
+                "dup_of": dup_of.get("title", ""),
+                "sim": round(sim, 3),
+            })
+    return kept, removed
+
+
+def deterministic_dedup_gate(selection: list[dict]) -> tuple[list[dict], list[dict]]:
+    """LLM 게이트 통과본에 대한 결정론적 중복 안전망.
+
+    제목+요약 임베딩 cosine으로 near-dup 검출·제거. 임베딩 실패 시 원본 통과.
+    """
+    if len(selection) < 2:
+        return selection, []
+    texts = [f"{it.get('title','')}\n{it.get('summary','')}" for it in selection]
+    try:
+        vecs = _embed_texts(texts)
+    except Exception as e:
+        print(f"[WARN] dedup embedding 실패 — 결정론 게이트 건너뜀: {e}", file=sys.stderr)
+        return selection, []
+    return dedup_by_vectors(selection, vecs)
+
+
+# ─────────────────────────────────────────────────────────────
 # Final review gate
 
 def final_review(selection: list[dict]) -> dict:
@@ -379,7 +456,19 @@ def assemble_briefing(items: list[dict]) -> list[dict] | None:
             file=sys.stderr,
         )
         if verdict["passed"]:
-            return verdict["approved"][:TARGET_COUNT]
+            # HARD 게이트 — LLM이 놓친 near-dup을 임베딩으로 결정론적 제거
+            deduped, removed = deterministic_dedup_gate(verdict["approved"][:TARGET_COUNT])
+            for r in removed:
+                print(
+                    f"[HARD dedup] 제거: '{r['dropped']}' ≈ '{r['dup_of']}' (sim {r['sim']})",
+                    file=sys.stderr,
+                )
+            if len(deduped) >= MIN_POST_ITEMS:
+                return deduped[:TARGET_COUNT]
+            # 결정론 제거 후 너무 적으면 — 이슈로 남겨 재조립
+            print("[Final gate] HARD dedup 후 기사 부족 — 재조립", file=sys.stderr)
+            carry_lessons.append("선정 기사들이 서로 너무 유사하다. 더 다양한 이벤트를 골라라.")
+            continue
         # 통과 못 함 — 발견된 중복 이슈를 다음 시도 큐레이터에게 교육
         carry_lessons.extend(verdict["issues"])
 
