@@ -24,10 +24,12 @@ BRIEFING_WEBHOOK = os.environ.get("BRIEFING_SLACK_WEBHOOK_URL", "").strip()
 LAKA_SLACK_BOT_TOKEN = os.environ.get("LAKA_SLACK_BOT_TOKEN", "").strip()
 LAKA_SLACK_CHANNEL = os.environ.get("LAKA_SLACK_CHANNEL", "#cosmetic-news-briefing").strip()
 
-LOOKBACK_HOURS = 48
+LOOKBACK_HOURS = 24
 TARGET_COUNT = 10
 MAX_ROUNDS = 3
-CURATOR_BUFFER = 5   # 라운드당 TARGET보다 여유 있게 선정
+CURATOR_BUFFER = 5     # 라운드당 TARGET보다 여유 있게 선정
+MAX_POST_ATTEMPTS = 3  # 최종 리뷰 게이트 통과 못 하면 재조립 시도
+MIN_POST_ITEMS = 3     # 최종 선정이 이보다 적으면 게시 보류
 MODEL = "gpt-4o-mini"
 KST = timezone(timedelta(hours=9))
 
@@ -215,15 +217,17 @@ def review(candidates: list[dict], already_approved: list[dict]) -> dict:
 # ─────────────────────────────────────────────────────────────
 # Curator-Reviewer loop
 
-def curator_reviewer_loop(items: list[dict]) -> list[dict]:
+def curator_reviewer_loop(items: list[dict], extra_lessons: list[str] | None = None) -> list[dict]:
     """편집장-기자 교육 루프.
 
     Round 1: 큐레이터 선정 → 리뷰어 검수 → 피드백 생성
     Round 2: 피드백 반영 + 처리된 URL 제외 → 큐레이터 재선정 → 리뷰어 검수
     ...반복 (최대 MAX_ROUNDS, 또는 TARGET_COUNT 달성 시 종료)
+
+    extra_lessons — 최종 게이트가 직전 시도에서 발견한 중복 이슈 (재조립 시 주입)
     """
     approved: list[dict] = []
-    lessons: list[str] = []
+    lessons: list[str] = list(extra_lessons) if extra_lessons else []
     exclude_urls: set[str] = set()
 
     for round_num in range(1, MAX_ROUNDS + 1):
@@ -268,6 +272,94 @@ def curator_reviewer_loop(items: list[dict]) -> list[dict]:
             break
 
     return approved[:TARGET_COUNT]
+
+
+# ─────────────────────────────────────────────────────────────
+# Final review gate
+
+def final_review(selection: list[dict]) -> dict:
+    """편집장 최종 검수 — 게시 직전 게이트.
+
+    중복 이벤트가 남아있는지, 게시할 만한 품질인지 최종 판정.
+    반환:
+      passed   — True면 게시 OK
+      approved — 중복 제거된 최종 기사 목록 (passed 무관하게 정제본)
+      issues   — 발견된 문제(다음 재조립 라운드에 피드백)
+    """
+    if not selection:
+        return {"passed": False, "approved": [], "issues": ["선정된 기사 없음"]}
+
+    system_prompt = """너는 코스메틱 뉴스 편집장이다. 게시 직전 최종 검수를 한다.
+
+[검수 항목]
+1. 목록 안에 동일 이벤트(같은 기업·인물의 같은 사건)를 다룬 기사가 2건 이상 있는가?
+   있으면 가장 정보가 풍부한 1건만 남기고 approved에서 제외한다.
+   동일 이벤트 판단: (주체 기업·인물) + (핵심 사건)이 같으면 동일.
+   단지 같은 업계·같은 채널이라는 이유로 동일 취급하지 말 것.
+2. 중복을 모두 제거한 결과가 게시하기에 적절한가?
+
+[passed 판정]
+- approved에 중복 이벤트가 전혀 없으면 passed=true.
+- 중복이 있었다면 제거 후에도, 남은 기사가 서로 모두 다른 이벤트면 passed=true.
+
+[issues 작성]
+- 제거한 중복 이벤트마다 1줄로 사유 기록.
+
+응답 형식(JSON):
+{
+  "passed": true,
+  "approved": [{"url": "...", "title": "...", "category": "...", "summary": "..."}],
+  "issues": ["..."]
+}"""
+
+    user_prompt = "최종 선정 목록:\n" + "\n".join(
+        f"- [{c.get('category','')}] {c.get('title','')} ({c.get('url','')})" for c in selection
+    )
+
+    try:
+        result = _chat(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.1,
+        )
+        approved = result.get("approved", [])
+        passed = bool(result.get("passed", False)) and len(approved) >= MIN_POST_ITEMS
+        return {
+            "passed": passed,
+            "approved": approved,
+            "issues": result.get("issues", []),
+        }
+    except Exception as e:
+        print(f"[WARN] final_review failed: {e}", file=sys.stderr)
+        # 검수 실패 시 게시 보류 (안전)
+        return {"passed": False, "approved": selection, "issues": ["최종 검수 호출 실패"]}
+
+
+def assemble_briefing(items: list[dict]) -> list[dict] | None:
+    """조립 → 최종 검수 게이트. 통과 시 최종 목록 반환, 끝내 미달이면 None.
+
+    게이트를 통과하지 못하면 issues를 다음 시도의 큐레이터 피드백으로 넣어 재조립.
+    MAX_POST_ATTEMPTS 동안 통과 못 하면 None → 게시하지 않음.
+    """
+    carry_lessons: list[str] = []
+    for attempt in range(1, MAX_POST_ATTEMPTS + 1):
+        selection = curator_reviewer_loop(items, extra_lessons=carry_lessons)
+        verdict = final_review(selection)
+        print(
+            f"[Final gate attempt {attempt}] selected={len(selection)} "
+            f"approved={len(verdict['approved'])} passed={verdict['passed']} "
+            f"issues={len(verdict['issues'])}",
+            file=sys.stderr,
+        )
+        if verdict["passed"]:
+            return verdict["approved"][:TARGET_COUNT]
+        # 통과 못 함 — 발견된 중복 이슈를 다음 시도 큐레이터에게 교육
+        carry_lessons.extend(verdict["issues"])
+
+    print("[Final gate] 모든 시도 미달 — 게시 보류", file=sys.stderr)
+    return None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -338,17 +430,17 @@ def main() -> int:
     items = load_recent_posts()
     print(f"loaded {len(items)} posts from last {LOOKBACK_HOURS}h", file=sys.stderr)
 
+    # 데이터 없음 — 미달 메시지 게시하지 않고 조용히 종료 (실패로 표시)
     if not items:
-        post_to_slack("🌅 코스메틱 아침 브리핑 — 어제 게시된 기사가 없습니다.")
-        return 0
+        print("[SKIP] 수집된 기사 없음 — 게시하지 않음", file=sys.stderr)
+        return 1
 
-    final = curator_reviewer_loop(items)
+    # 조립 → 최종 리뷰 게이트. 통과해야만 final이 채워짐.
+    final = assemble_briefing(items)
 
+    # 게이트 미통과 — 품질 미달 브리핑은 게시하지 않음
     if not final:
-        post_to_slack(
-            f"🌅 코스메틱 아침 브리핑 — AI 큐레이션 실패 (총 {len(items)}건 수집됨). "
-            "#cosmetic-news 직접 확인 부탁드립니다."
-        )
+        print("[SKIP] 최종 게이트 미통과 — 게시하지 않음", file=sys.stderr)
         return 1
 
     text = format_briefing(final, len(items))
