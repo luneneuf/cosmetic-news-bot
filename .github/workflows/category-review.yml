@@ -1,15 +1,15 @@
-name: morning-briefing
+name: category-review
 
 on:
-  # ⚠️ 별도 지시 전까지 자동 게시 보류 — 아래 cron 주석 해제 시 KST 평일 08:00 게시
+  # ⚠️ 별도 지시 전까지 자동 게시 보류 — cron 주석 해제 시 KST 금요일 08:30 점검
   # schedule:
-  #   - cron: '0 23 * * 0-4'   # UTC 일~목 23:00 = KST 월~금 08:00
+  #   - cron: '30 23 * * 4'   # UTC 목 23:30 = KST 금 08:30 (브리핑 후)
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Slack 미게시 — 로그로만 결과 확인'
+        description: 'Slack 미게시 — 로그로만 리포트 확인'
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -17,26 +17,14 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
-concurrency:
-  group: morning-briefing
-  cancel-in-progress: false
-
 jobs:
-  briefing:
+  review:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Restore posted_log (독립 캐시 — state 버전 무관)
-        uses: actions/cache/restore@v4
-        with:
-          path: posted_log.jsonl
-          key: news-bot-posted-log-${{ github.run_id }}
-          restore-keys: |
-            news-bot-posted-log-
 
       - name: Restore category_stats (독립 캐시)
         uses: actions/cache/restore@v4
@@ -46,9 +34,8 @@ jobs:
           restore-keys: |
             news-bot-category-stats-
 
-      - name: Check state
+      - name: Check stats
         run: |
-          [ -f posted_log.jsonl ] && echo "posted_log.jsonl: $(wc -l < posted_log.jsonl) lines" || { touch posted_log.jsonl; echo "posted_log.jsonl: empty"; }
           [ -f category_stats.jsonl ] && echo "category_stats.jsonl: $(wc -l < category_stats.jsonl) lines" || { touch category_stats.jsonl; echo "category_stats.jsonl: empty"; }
 
       - uses: actions/setup-python@v5
@@ -59,18 +46,11 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Run briefing
+      - name: Run weekly category review
         env:
           BRIEFING_SLACK_WEBHOOK_URL: ${{ secrets.BRIEFING_SLACK_WEBHOOK_URL }}
           LAKA_SLACK_BOT_TOKEN: ${{ secrets.LAKA_SLACK_BOT_TOKEN }}
           LAKA_SLACK_CHANNEL: ${{ secrets.LAKA_SLACK_CHANNEL }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BRIEFING_MODE: review
           BRIEFING_DRY_RUN: ${{ inputs.dry_run }}
         run: python briefing.py
-
-      - name: Save category_stats (독립 캐시)
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: category_stats.jsonl
-          key: news-bot-category-stats-${{ github.run_id }}-${{ github.run_attempt }}

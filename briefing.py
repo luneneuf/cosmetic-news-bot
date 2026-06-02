@@ -16,8 +16,12 @@ from pathlib import Path
 import requests
 
 POSTED_LOG_PATH = Path("posted_log.jsonl")
+CATEGORY_STATS_PATH = Path("category_stats.jsonl")   # 카테고리 분포 누적 (주간 점검용)
 PRIORITIES_PATH = Path(__file__).parent / "priorities.json"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+
+# 실행 모드: "briefing"(기본) | "review"(주간 카테고리 점검)
+BRIEFING_MODE = os.environ.get("BRIEFING_MODE", "briefing").strip().lower()
 
 # ── Slack 게시 대상 ──────────────────────────────────────────
 BRIEFING_WEBHOOK = os.environ.get("BRIEFING_SLACK_WEBHOOK_URL", "").strip()
@@ -34,6 +38,11 @@ CURATOR_BUFFER = 5     # 라운드당 TARGET보다 여유 있게 선정
 MAX_POST_ATTEMPTS = 3  # 최종 리뷰 게이트 통과 못 하면 재조립 시도
 MIN_POST_ITEMS = 3     # 최종 선정이 이보다 적으면 게시 보류
 MODEL = "gpt-4o-mini"
+
+# 주간 카테고리 점검 파라미터
+REVIEW_WINDOW_DAYS = 7         # 최근 N일 분포를 본다
+CONCENTRATION_THRESHOLD = 0.6  # 한 카테고리가 기간 내 60%+면 편중 경고
+STARVATION_MIN_RUNS = 5        # 최소 N회 이상 기록이 쌓였을 때만 공백 판정
 KST = timezone(timedelta(hours=9))
 
 CAT_ORDER = ["자사", "경쟁사", "채널", "안전", "동향"]
@@ -409,6 +418,86 @@ def format_briefing(curated: list[dict], total_count: int) -> str:
     return "\n".join(lines)
 
 
+# ─────────────────────────────────────────────────────────────
+# 카테고리 분포 누적 & 주간 점검
+
+def append_category_stats(selection: list[dict]) -> None:
+    """오늘 선정 결과의 카테고리 분포를 category_stats.jsonl에 누적."""
+    counts = {cat: 0 for cat in CAT_ORDER}
+    for it in selection:
+        cat = it.get("category", "동향")
+        if cat not in counts:
+            cat = "동향"
+        counts[cat] += 1
+    row = {"date": datetime.now(KST).strftime("%Y-%m-%d"), "counts": counts}
+    with open(CATEGORY_STATS_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def load_category_stats(days: int = REVIEW_WINDOW_DAYS) -> list[dict]:
+    """최근 N일 분포 기록 반환."""
+    if not CATEGORY_STATS_PATH.exists():
+        return []
+    cutoff = (datetime.now(KST) - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows: list[dict] = []
+    with open(CATEGORY_STATS_PATH, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+                if row.get("date", "") >= cutoff:
+                    rows.append(row)
+            except Exception:
+                continue
+    return rows
+
+
+def weekly_category_review() -> str | None:
+    """최근 분포를 점검 — 편중·공백 감지 시 리포트 텍스트, 정상이면 None."""
+    rows = load_category_stats()
+    if not rows:
+        return None
+
+    totals = {cat: 0 for cat in CAT_ORDER}
+    for r in rows:
+        for cat, c in r.get("counts", {}).items():
+            if cat in totals:
+                totals[cat] += c
+    grand = sum(totals.values())
+    if grand == 0:
+        return None
+
+    warnings: list[str] = []
+    # 편중 — 한 카테고리가 임계 비율 이상
+    for cat in CAT_ORDER:
+        share = totals[cat] / grand
+        if share >= CONCENTRATION_THRESHOLD:
+            warnings.append(
+                f"⚠️ *{cat}* 편중 — 최근 {len(rows)}회 {share*100:.0f}% ({totals[cat]}/{grand})"
+            )
+    # 공백 — 충분히 기록이 쌓였는데 한 건도 없는 카테고리
+    if len(rows) >= STARVATION_MIN_RUNS:
+        for cat in CAT_ORDER:
+            if totals[cat] == 0:
+                warnings.append(f"💤 *{cat}* — 최근 {len(rows)}회 0건")
+
+    if not warnings:
+        return None
+
+    dist = " · ".join(f"{cat} {totals[cat]}" for cat in CAT_ORDER)
+    lines = [
+        "🗂️ *주간 카테고리 분포 점검*",
+        f"최근 {len(rows)}회 분포: {dist}",
+        "",
+        *warnings,
+        "",
+        "→ 분류 축(자사·경쟁사·채널·안전·동향) 재검토가 필요할 수 있습니다.",
+    ]
+    return "\n".join(lines)
+
+
 def post_to_slack(text: str) -> None:
     if BRIEFING_WEBHOOK:
         r = requests.post(
@@ -435,10 +524,29 @@ def post_to_slack(text: str) -> None:
 # ─────────────────────────────────────────────────────────────
 # Entry point
 
+def run_review() -> int:
+    """주간 카테고리 점검 모드 — 분포 리포트만 생성/게시."""
+    report = weekly_category_review()
+    if not report:
+        print("[REVIEW] 편중·공백 없음 — 리포트 생략", file=sys.stderr)
+        return 0
+    if DRY_RUN:
+        print("===== DRY RUN — 주간 점검 리포트 =====", file=sys.stderr)
+        print(report, file=sys.stderr)
+        return 0
+    post_to_slack(report)
+    print("[REVIEW] 주간 점검 리포트 게시", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     if not BRIEFING_WEBHOOK and not LAKA_SLACK_BOT_TOKEN:
         print("ERROR: BRIEFING_SLACK_WEBHOOK_URL 또는 LAKA_SLACK_BOT_TOKEN 필요", file=sys.stderr)
         return 1
+
+    if BRIEFING_MODE == "review":
+        return run_review()
+
     if not OPENAI_API_KEY:
         print("ERROR: OPENAI_API_KEY not set", file=sys.stderr)
         return 1
@@ -468,6 +576,7 @@ def main() -> int:
         return 0
 
     post_to_slack(text)
+    append_category_stats(final)  # 분포 누적 (주간 점검용)
     print(f"briefing posted: {len(final)} items", file=sys.stderr)
     return 0
 
