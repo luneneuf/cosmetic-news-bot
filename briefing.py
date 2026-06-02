@@ -25,7 +25,7 @@ BRIEFING_WEBHOOK = os.environ.get("BRIEFING_SLACK_WEBHOOK_URL", "").strip()
 LAKA_SLACK_BOT_TOKEN = os.environ.get("LAKA_SLACK_BOT_TOKEN", "").strip()
 LAKA_SLACK_CHANNEL = os.environ.get("LAKA_SLACK_CHANNEL", "#cosmetic-news-briefing").strip()
 
-LOOKBACK_HOURS = 24
+LOOKBACK_HOURS = 48
 TARGET_COUNT = 10
 MODEL = "gpt-4o-mini"
 KST = timezone(timedelta(hours=9))
