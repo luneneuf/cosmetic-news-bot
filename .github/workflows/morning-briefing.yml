@@ -28,12 +28,12 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: |
-            posted_log.jsonl
             seen_links.json
             seen_titles.json
             seen_titles_embeddings.json
             seen_title_embeddings.json
             seen_titles_list.json
+            posted_log.jsonl
           key: news-bot-seen-v8-26791055158-1
 
       - name: Check posted_log
