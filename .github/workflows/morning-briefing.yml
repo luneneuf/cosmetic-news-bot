@@ -24,7 +24,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Restore posted_log (독립 캐시 → v8 state 폴백)
+      - name: Restore posted_log (일회성 — 어제 데이터 든 옛 v8 정확 키)
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -34,10 +34,7 @@ jobs:
             seen_titles_embeddings.json
             seen_title_embeddings.json
             seen_titles_list.json
-          key: news-bot-posted-log-${{ github.run_id }}
-          restore-keys: |
-            news-bot-posted-log-
-            news-bot-seen-v8-
+          key: news-bot-seen-v8-26791055158-1
 
       - name: Check posted_log
         run: |
