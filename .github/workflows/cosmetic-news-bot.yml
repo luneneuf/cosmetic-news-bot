@@ -36,11 +36,17 @@ jobs:
             seen_titles_embeddings.json
             seen_title_embeddings.json
             seen_titles_list.json
-            posted_log.jsonl
-          # v8: seen_titles_list.json 추가 (제목 키워드 Jaccard dedup 실행 간 유지)
           key: news-bot-seen-v8-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             news-bot-seen-v8-
+
+      - name: Restore posted_log cache (독립 캐시 — 버전 무관)
+        uses: actions/cache/restore@v4
+        with:
+          path: posted_log.jsonl
+          key: news-bot-posted-log-${{ github.run_id }}
+          restore-keys: |
+            news-bot-posted-log-
 
       - name: Init empty state if cache miss
         run: |
@@ -78,7 +84,7 @@ jobs:
         run: python collect_and_post.py
 
       - name: Save state cache
-        if: always()  # 워크플로 fail에도 save 보장
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: |
@@ -87,5 +93,11 @@ jobs:
             seen_titles_embeddings.json
             seen_title_embeddings.json
             seen_titles_list.json
-            posted_log.jsonl
           key: news-bot-seen-v8-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save posted_log cache (독립 캐시 — 버전 무관)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: posted_log.jsonl
+          key: news-bot-posted-log-${{ github.run_id }}-${{ github.run_attempt }}
