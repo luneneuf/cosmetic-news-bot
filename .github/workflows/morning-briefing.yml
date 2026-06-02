@@ -1,9 +1,8 @@
 name: morning-briefing
 
 on:
-  # ⚠️ 별도 지시 전까지 자동 게시 보류 — 아래 cron 주석 해제 시 KST 평일 08:00 게시
-  # schedule:
-  #   - cron: '0 23 * * 0-4'   # UTC 일~목 23:00 = KST 월~금 08:00
+  schedule:
+    - cron: '0 23 * * 0-4'   # UTC 일~목 23:00 = KST 월~금 08:00
   workflow_dispatch:
     inputs:
       dry_run:

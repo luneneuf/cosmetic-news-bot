@@ -1,9 +1,8 @@
 name: category-review
 
 on:
-  # ⚠️ 별도 지시 전까지 자동 게시 보류 — cron 주석 해제 시 KST 금요일 08:30 점검
-  # schedule:
-  #   - cron: '30 23 * * 4'   # UTC 목 23:30 = KST 금 08:30 (브리핑 후)
+  schedule:
+    - cron: '30 23 * * 4'   # UTC 목 23:30 = KST 금 08:30 (브리핑 후)
   workflow_dispatch:
     inputs:
       dry_run:
