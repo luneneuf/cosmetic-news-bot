@@ -8,3 +8,7 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+
+# safety_signals 런타임 산출물 (코드만 커밋, 일일 출력·상태는 로컬)
+safety_signals/output/
+# seen_links.json은 위 패턴으로 이미 무시됨 (safety_signals/seen_links.json 포함)

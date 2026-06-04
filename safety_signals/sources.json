@@ -1,0 +1,102 @@
+{
+  "_comment": "안전관리 시그널 수집 대상 후보 소스. 각 후보는 실제 URL 검증 후 active로 전환. tier: A(국내 관) / B(해외 관) / C(학술·미디어)",
+  "candidates": [
+    {
+      "id": "fda_recalls",
+      "name": "FDA Recalls (전체, 화장품 필터링 별도)",
+      "tier": "B",
+      "country": "US",
+      "type": "rss",
+      "urls": [
+        "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/recalls/rss.xml",
+        "https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts/rss.xml"
+      ]
+    },
+    {
+      "id": "fda_cosmetics_news",
+      "name": "FDA Cosmetics 뉴스 RSS",
+      "tier": "B",
+      "country": "US",
+      "type": "rss",
+      "urls": [
+        "https://www.fda.gov/cosmetics/cosmetics-news-events/rss.xml"
+      ]
+    },
+    {
+      "id": "eu_safety_gate",
+      "name": "EU Safety Gate (RAPEX) 주간 알림",
+      "tier": "B",
+      "country": "EU",
+      "type": "rss",
+      "urls": [
+        "https://ec.europa.eu/consumers/consumers_safety/safety_products/rapex/alerts/repository/rss.xml",
+        "https://ec.europa.eu/safety-gate-alerts/rss"
+      ]
+    },
+    {
+      "id": "pubmed_cosmetic_ae",
+      "name": "PubMed — cosmetic adverse events 검색",
+      "tier": "C",
+      "country": "INT",
+      "type": "rss",
+      "search_term": "(cosmetic[Title]) AND (adverse OR allergy OR dermatitis OR recall)",
+      "urls": [
+        "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=%28cosmetic%5BTitle%5D%29+AND+%28adverse+OR+allergy+OR+dermatitis+OR+recall%29&sort=date&rettype=json"
+      ]
+    },
+    {
+      "id": "mfds_press",
+      "name": "식약처 보도자료",
+      "tier": "A",
+      "country": "KR",
+      "type": "rss_or_html",
+      "urls": [
+        "https://www.mfds.go.kr/brd/m_99/list.do",
+        "https://www.mfds.go.kr/rss/news.do"
+      ]
+    },
+    {
+      "id": "mfds_recall",
+      "name": "식약처 의약품안전나라 회수·판매중지",
+      "tier": "A",
+      "country": "KR",
+      "type": "html",
+      "urls": [
+        "https://nedrug.mfds.go.kr/pbp/CCBBJ01/getList?totalPages=4&limit=10&page=1",
+        "https://nedrug.mfds.go.kr/index"
+      ]
+    },
+    {
+      "id": "kcia_notice",
+      "name": "대한화장품협회 KCIA 공지사항",
+      "tier": "A",
+      "country": "KR",
+      "type": "html",
+      "urls": [
+        "https://www.kcia.or.kr/home/notice/notice_list.php",
+        "https://www.kcia.or.kr"
+      ]
+    },
+    {
+      "id": "uk_opss",
+      "name": "UK OPSS Product Safety Alerts",
+      "tier": "B",
+      "country": "UK",
+      "type": "rss_or_html",
+      "urls": [
+        "https://www.gov.uk/government/organisations/office-for-product-safety-and-standards.atom",
+        "https://www.gov.uk/search/news-and-communications.atom?organisations%5B%5D=office-for-product-safety-and-standards"
+      ]
+    },
+    {
+      "id": "japan_pmda_recall",
+      "name": "일본 PMDA 화장품 회수",
+      "tier": "B",
+      "country": "JP",
+      "type": "html",
+      "urls": [
+        "https://www.pmda.go.jp/safety/info-services/cosmetics/0001.html"
+      ]
+    }
+  ]
+}
