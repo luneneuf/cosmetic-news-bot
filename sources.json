@@ -36,20 +36,6 @@
     "enabled": true
   },
   {
-    "id": "naver_dutyfree",
-    "type": "naver_news",
-    "query": "면세점",
-    "enabled": true,
-    "note": "면세 채널·정책(특허수수료·면세한도). 단어 substring 매칭이라 단일어로 recall 확보"
-  },
-  {
-    "id": "naver_homeshopping",
-    "type": "naver_news",
-    "query": "홈쇼핑",
-    "enabled": true,
-    "note": "홈쇼핑 채널(현대홈쇼핑 등 substring 매칭). 비화장품 노이즈는 큐레이터가 필터"
-  },
-  {
     "id": "rss_jangup",
     "type": "rss",
     "url": "https://www.jangup.com/rss/allArticle.xml",
