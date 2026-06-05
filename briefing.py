@@ -277,6 +277,9 @@ def curator_reviewer_loop(items: list[dict], extra_lessons: list[str] | None = N
     approved: list[dict] = []
     lessons: list[str] = list(extra_lessons) if extra_lessons else []
     exclude_urls: set[str] = set()
+    # 큐레이터가 정한 카테고리(주체 기준 루브릭)를 URL로 보존 —
+    # 리뷰어/최종게이트의 LLM 재출력이 전부 '동향'으로 뭉개는 것 방지
+    cat_map: dict[str, str] = {}
 
     for round_num in range(1, MAX_ROUNDS + 1):
         remaining = TARGET_COUNT - len(approved)
@@ -300,6 +303,10 @@ def curator_reviewer_loop(items: list[dict], extra_lessons: list[str] | None = N
             print(f"[Round {round_num}] curator returned 0, stopping", file=sys.stderr)
             break
 
+        for c in candidates:
+            if c.get("url") and c.get("category"):
+                cat_map[c["url"]] = c["category"]
+
         result = review(candidates, already_approved=approved)
 
         newly = result["approved"]
@@ -318,6 +325,13 @@ def curator_reviewer_loop(items: list[dict], extra_lessons: list[str] | None = N
 
         if result["satisfied"] and len(approved) >= TARGET_COUNT:
             break
+
+    # 큐레이터 카테고리 복원 (리뷰어가 덮어쓴 값 교정)
+    for it in approved:
+        if it.get("url") in cat_map:
+            it["category"] = cat_map[it["url"]]
+    from collections import Counter
+    print(f"[cat] 큐레이터 분류: {dict(Counter(it.get('category','?') for it in approved))}", file=sys.stderr)
 
     return approved[:TARGET_COUNT]
 
@@ -469,7 +483,12 @@ def assemble_briefing(items: list[dict]) -> list[dict] | None:
     carry_lessons: list[str] = []
     for attempt in range(1, MAX_POST_ATTEMPTS + 1):
         selection = curator_reviewer_loop(items, extra_lessons=carry_lessons)
+        # 큐레이터 카테고리를 URL로 보존 — final_review LLM 재출력이 덮어쓰는 것 교정
+        sel_cat = {it["url"]: it.get("category") for it in selection if it.get("url")}
         verdict = final_review(selection)
+        for it in verdict.get("approved", []):
+            if sel_cat.get(it.get("url")):
+                it["category"] = sel_cat[it["url"]]
         print(
             f"[Final gate attempt {attempt}] selected={len(selection)} "
             f"approved={len(verdict['approved'])} passed={verdict['passed']} "
