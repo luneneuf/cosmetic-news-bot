@@ -5,9 +5,10 @@ GitHub Actions 워크플로가 호출. 동작:
 2. sources.json의 각 source 폴링 (Naver News API + RSS)
 3. 신규 후보 수집 (URL·blocklist·prefix sig 1차 필터)
 4. OpenAI embedding 배치 호출 (제목+본문 / 제목 전용 동시) — 이중 채널 dedup
-5. 제목+본문 0.75 OR 제목 전용 0.82 시 차단 (보도자료 도배 + 매체별 제목 변형 흡수)
+5. EMBEDDING_THRESHOLD(제목+본문) OR TITLE_EMBEDDING_THRESHOLD(제목 전용)
+   OR 제목 핵심어 Jaccard 초과 시 차단 (보도자료 도배 + 매체별 제목 변형 흡수)
 6. 통과 항목 Slack 게시 (링크 1줄 + unfurl)
-7. state 갱신 (URL + sig + embedding 두 세트)
+7. state 갱신 — 게시 성공 항목만 seen 반영 (실패·overflow는 다음 실행에서 재시도)
 """
 
 from __future__ import annotations
@@ -156,20 +157,23 @@ def is_blocked(url: str, blocklist: set[str]) -> bool:
 # ─────────────────────────────────────────────────────────────
 # State I/O
 
-def load_set(path: Path) -> set[str]:
+def load_seen(path: Path) -> dict[str, None]:
+    """seen 상태 — 삽입 순서가 보존되는 dict를 ordered set처럼 사용.
+    set으로 저장하면 캡 도달 시 무작위 항목이 삭제돼 최근 URL이 날아갈 수 있다.
+    """
     if not path.exists():
-        return set()
+        return {}
     try:
-        return set(json.loads(path.read_text(encoding="utf-8")))
+        return dict.fromkeys(json.loads(path.read_text(encoding="utf-8")))
     except Exception as e:
         print(f"[WARN] state {path.name} unreadable: {e}", file=sys.stderr)
-        return set()
+        return {}
 
 
-def save_set(path: Path, s: set[str]) -> None:
-    arr = list(s)
+def save_seen(path: Path, seen: dict[str, None]) -> None:
+    arr = list(seen)
     if len(arr) > SEEN_CAP:
-        arr = arr[-SEEN_CAP:]
+        arr = arr[-SEEN_CAP:]  # 삽입 순서 보존 → 가장 오래된 것부터 잘림
     path.write_text(json.dumps(arr, ensure_ascii=False), encoding="utf-8")
 
 
@@ -361,29 +365,42 @@ def append_posted_log(item: dict) -> None:
 
 
 def post_text(text: str) -> bool:
-    ok = True
+    """두 대상(개인 webhook, LAKA bot) 게시. 하나라도 성공하면 True.
+
+    True면 독자에게 도달한 것이므로 seen 마킹·posted_log 기록 대상.
+    네트워크 예외도 채널별로 격리해 한 채널 장애가 실행 전체를 죽이지 않게 한다.
+    """
+    success = False
     if WEBHOOK:
-        r = requests.post(
-            WEBHOOK,
-            json={"text": text, "unfurl_links": True, "unfurl_media": True},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            print(f"[WARN] slack post failed: {r.status_code} {r.text[:200]}", file=sys.stderr)
-            ok = False
+        try:
+            r = requests.post(
+                WEBHOOK,
+                json={"text": text, "unfurl_links": True, "unfurl_media": True},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                success = True
+            else:
+                print(f"[WARN] slack post failed: {r.status_code} {r.text[:200]}", file=sys.stderr)
+        except Exception as ex:
+            print(f"[WARN] slack post error: {ex}", file=sys.stderr)
     if LAKA_SLACK_BOT_TOKEN and LAKA_NEWS_SLACK_CHANNEL:
-        r = requests.post(
-            "https://slack.com/api/chat.postMessage",
-            headers={"Authorization": f"Bearer {LAKA_SLACK_BOT_TOKEN}"},
-            json={"channel": LAKA_NEWS_SLACK_CHANNEL, "text": text,
-                  "unfurl_links": True, "unfurl_media": True},
-            timeout=10,
-        )
-        body = r.json() if r.status_code == 200 else {}
-        if not body.get("ok"):
-            print(f"[WARN] laka slack post failed: {body.get('error', r.status_code)}", file=sys.stderr)
-            ok = False
-    return ok
+        try:
+            r = requests.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={"Authorization": f"Bearer {LAKA_SLACK_BOT_TOKEN}"},
+                json={"channel": LAKA_NEWS_SLACK_CHANNEL, "text": text,
+                      "unfurl_links": True, "unfurl_media": True},
+                timeout=10,
+            )
+            body = r.json() if r.status_code == 200 else {}
+            if body.get("ok"):
+                success = True
+            else:
+                print(f"[WARN] laka slack post failed: {body.get('error', r.status_code)}", file=sys.stderr)
+        except Exception as ex:
+            print(f"[WARN] laka slack post error: {ex}", file=sys.stderr)
+    return success
 
 
 # ─────────────────────────────────────────────────────────────
@@ -400,8 +417,8 @@ def main() -> int:
     sources = json.loads(SOURCES_PATH.read_text(encoding="utf-8"))
     blocklist = load_blocklist()
     keyword_blocklist = load_keyword_blocklist()
-    seen_urls = load_set(STATE_PATH)
-    seen_sigs = load_set(TITLES_PATH)
+    seen_urls = load_seen(STATE_PATH)
+    seen_sigs = load_seen(TITLES_PATH)
     seen_embeddings = load_embeddings(EMBEDDINGS_PATH)
     seen_title_embeddings = load_embeddings(TITLE_EMBEDDINGS_PATH)
     seen_titles_list = load_titles_list(TITLE_LIST_PATH)
@@ -425,44 +442,49 @@ def main() -> int:
             if it["link"] in seen_urls:
                 continue
             if is_blocked(it["link"], blocklist):
-                seen_urls.add(it["link"])
+                seen_urls[it["link"]] = None
                 blocked_count += 1
                 continue
             if is_title_blocked(it.get("title", ""), keyword_blocklist):
-                seen_urls.add(it["link"])
+                seen_urls[it["link"]] = None
                 keyword_blocked_count += 1
                 continue
             if not is_korean_title(it.get("title", "")):
                 # 한국어 봇 — 영문 제목 차단 (cross-language embedding dedup 한계 회피)
-                seen_urls.add(it["link"])
+                seen_urls[it["link"]] = None
                 non_korean_count += 1
                 continue
             sig = title_signature(it.get("title", ""))
             if sig and sig in seen_sigs:
                 # 짧은 제목 정확 일치 (embedding 호출 비용 절감 + 빠름)
-                seen_urls.add(it["link"])
+                seen_urls[it["link"]] = None
                 dup_sig_count += 1
                 continue
             candidates.append({"item": it, "sig": sig})
 
     # 2단계: embedding 배치 계산 — 제목+본문·제목 전용을 한 API 호출로 묶어 처리
+    # API 장애 시 크래시 대신 키워드 dedup만으로 강등 운행 (그 사이클 게시 0건 방지)
     n = len(candidates)
     texts_for_embed = [embed_text(c["item"]) for c in candidates]
     title_texts = [title_clean(c["item"].get("title", "")) for c in candidates]
+    embeddings_ok = True
+    new_embeddings = np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+    new_title_embeddings = np.empty((0, EMBEDDING_DIM), dtype=np.float32)
     if texts_for_embed:
-        all_vecs = fetch_embeddings(texts_for_embed + title_texts)
-        new_embeddings = all_vecs[:n]
-        new_title_embeddings = all_vecs[n:]
-    else:
-        new_embeddings = np.empty((0, EMBEDDING_DIM), dtype=np.float32)
-        new_title_embeddings = np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+        try:
+            all_vecs = fetch_embeddings(texts_for_embed + title_texts)
+            new_embeddings = all_vecs[:n]
+            new_title_embeddings = all_vecs[n:]
+        except Exception as ex:
+            embeddings_ok = False
+            print(f"[WARN] embedding API 실패 — 키워드 dedup만으로 강등 운행: {ex}", file=sys.stderr)
 
     # 3단계: 부트스트랩 모드 — 모두 seen에 기록, 게시 0건
     if is_bootstrap:
-        for c, vec in zip(candidates, new_embeddings):
-            seen_urls.add(c["item"]["link"])
+        for c in candidates:
+            seen_urls[c["item"]["link"]] = None
             if c["sig"]:
-                seen_sigs.add(c["sig"])
+                seen_sigs[c["sig"]] = None
         if new_embeddings.shape[0] > 0:
             seen_embeddings = np.vstack([seen_embeddings, new_embeddings])
         if new_title_embeddings.shape[0] > 0:
@@ -471,70 +493,89 @@ def main() -> int:
             f":robot_face: cosmetic-news-bot 시작 — {len(candidates)}개 기존 항목 부트스트랩 완료. "
             f"다음 실행부터 신규 항목만 게시합니다."
         )
-        save_set(STATE_PATH, seen_urls)
-        save_set(TITLES_PATH, seen_sigs)
+        save_seen(STATE_PATH, seen_urls)
+        save_seen(TITLES_PATH, seen_sigs)
         save_embeddings(EMBEDDINGS_PATH, seen_embeddings)
         save_embeddings(TITLE_EMBEDDINGS_PATH, seen_title_embeddings)
         print(f"bootstrap: {len(candidates)} items, {seen_embeddings.shape[0]} embeddings", file=sys.stderr)
         return 0
 
     # 4단계: 이중 채널 embedding dedup + 제목 핵심어 Jaccard dedup
-    #   채널 A: 제목+본문 @ 0.75 — 보도자료 본문이 유사한 경우
-    #   채널 B: 제목 전용  @ 0.78 — 본문이 달라도 제목이 같은 경우
+    #   채널 A: 제목+본문 @ EMBEDDING_THRESHOLD — 보도자료 본문이 유사한 경우
+    #   채널 B: 제목 전용  @ TITLE_EMBEDDING_THRESHOLD — 본문이 달라도 제목이 같은 경우
     #   채널 C: 제목 핵심어 Jaccard @ 0.40 — 같은 사건 다른 표현 (언론사별 제목 변형)
-    new_items: list[dict] = []
+    # 중복으로 판정된 항목만 즉시 seen 마킹.
+    # 통과(accepted) 항목은 게시 성공 후에만 마킹 — 실패·overflow는 다음 실행에서 재시도된다.
+    accepted: list[dict] = []  # {item, sig, vec, title_vec}
+    batch_titles: list[str] = []  # 이번 batch에서 통과한 제목 (batch 내 채널 C dedup)
     dup_emb_count = 0
-    accepted_embeddings: list[np.ndarray] = []
-    accepted_title_embeddings: list[np.ndarray] = []
-    for c, vec, title_vec in zip(candidates, new_embeddings, new_title_embeddings):
+    for i, c in enumerate(candidates):
+        vec = new_embeddings[i] if embeddings_ok else None
+        title_vec = new_title_embeddings[i] if embeddings_ok else None
         title = c["item"].get("title", "")
-        if (is_dup_by_embedding(vec, seen_embeddings)
-                or is_dup_by_embedding(title_vec, seen_title_embeddings, TITLE_EMBEDDING_THRESHOLD)
-                or is_dup_by_keywords(title, seen_titles_list)):
-            seen_urls.add(c["item"]["link"])
+        # 기존 seen 대비 dedup
+        if embeddings_ok and (
+                is_dup_by_embedding(vec, seen_embeddings)
+                or is_dup_by_embedding(title_vec, seen_title_embeddings, TITLE_EMBEDDING_THRESHOLD)):
+            seen_urls[c["item"]["link"]] = None
             dup_emb_count += 1
             continue
-        # 같은 batch 안에서도 dedup
-        if ((accepted_embeddings and is_dup_by_embedding(vec, np.array(accepted_embeddings)))
-                or (accepted_title_embeddings and is_dup_by_embedding(
-                    title_vec, np.array(accepted_title_embeddings), TITLE_EMBEDDING_THRESHOLD))
-                or is_dup_by_keywords(title, seen_titles_list)):
-            seen_urls.add(c["item"]["link"])
+        if is_dup_by_keywords(title, seen_titles_list):
+            seen_urls[c["item"]["link"]] = None
             dup_emb_count += 1
             continue
-        new_items.append(c["item"])
-        seen_urls.add(c["item"]["link"])
-        if c["sig"]:
-            seen_sigs.add(c["sig"])
-        accepted_embeddings.append(vec)
-        accepted_title_embeddings.append(title_vec)
-        seen_titles_list.append(title)
-
-    if accepted_embeddings:
-        seen_embeddings = np.vstack([seen_embeddings, np.array(accepted_embeddings)])
-    if accepted_title_embeddings:
-        seen_title_embeddings = np.vstack([seen_title_embeddings, np.array(accepted_title_embeddings)])
+        # 같은 batch 안에서도 dedup (앞서 통과한 항목 대비)
+        if embeddings_ok and accepted and (
+                is_dup_by_embedding(vec, np.array([a["vec"] for a in accepted]))
+                or is_dup_by_embedding(
+                    title_vec, np.array([a["title_vec"] for a in accepted]), TITLE_EMBEDDING_THRESHOLD)):
+            seen_urls[c["item"]["link"]] = None
+            dup_emb_count += 1
+            continue
+        if is_dup_by_keywords(title, batch_titles):
+            seen_urls[c["item"]["link"]] = None
+            dup_emb_count += 1
+            continue
+        accepted.append({"item": c["item"], "sig": c["sig"], "vec": vec, "title_vec": title_vec})
+        batch_titles.append(title)
 
     # 5단계: Slack 게시 (MAX_PER_RUN cap + rate limit)
-    to_post = new_items[:MAX_PER_RUN]
-    overflow = len(new_items) - len(to_post)
+    # seen 마킹·embedding 영속화는 게시 성공 항목만 — overflow·실패분은 상태에 남기지 않아
+    # 다음 실행에서 다시 후보로 올라온다.
+    to_post = accepted[:MAX_PER_RUN]
+    overflow = len(accepted) - len(to_post)
     posted = 0
-    for it in to_post:
+    posted_vecs: list[np.ndarray] = []
+    posted_title_vecs: list[np.ndarray] = []
+    for a in to_post:
+        it = a["item"]
         if post_text(it["link"]):
             posted += 1
             append_posted_log(it)
+            seen_urls[it["link"]] = None
+            if a["sig"]:
+                seen_sigs[a["sig"]] = None
+            if embeddings_ok:
+                posted_vecs.append(a["vec"])
+                posted_title_vecs.append(a["title_vec"])
+            seen_titles_list.append(it.get("title", ""))
         time.sleep(SLACK_GAP_SEC)
+
+    if posted_vecs:
+        seen_embeddings = np.vstack([seen_embeddings, np.array(posted_vecs)])
+    if posted_title_vecs:
+        seen_title_embeddings = np.vstack([seen_title_embeddings, np.array(posted_title_vecs)])
 
     if overflow > 0:
         post_text(f"_(+{overflow}개 항목은 다음 실행에서 게시)_")
 
-    save_set(STATE_PATH, seen_urls)
-    save_set(TITLES_PATH, seen_sigs)
+    save_seen(STATE_PATH, seen_urls)
+    save_seen(TITLES_PATH, seen_sigs)
     save_embeddings(EMBEDDINGS_PATH, seen_embeddings)
     save_embeddings(TITLE_EMBEDDINGS_PATH, seen_title_embeddings)
     save_titles_list(TITLE_LIST_PATH, seen_titles_list)
     print(
-        f"new={len(new_items)} posted={posted} overflow={overflow} "
+        f"new={len(accepted)} posted={posted} overflow={overflow} "
         f"blocked={blocked_count} kw_blocked={keyword_blocked_count} "
         f"non_kr={non_korean_count} dup_sig={dup_sig_count} dup_emb={dup_emb_count}",
         file=sys.stderr,
