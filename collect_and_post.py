@@ -53,7 +53,7 @@ TITLE_SIG_LEN = 25
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIM = 512               # 1536 → 512로 축소 (저장·계산 비용 ↓)
 EMBEDDING_THRESHOLD = 0.75        # 제목+본문 임계값. 한국어 보도자료 매체별 변형 0.7~0.78 분포
-TITLE_EMBEDDING_THRESHOLD = 0.78  # 제목 전용 임계값. 같은 사건 다른 제목(언론사별 변형) 흡수용
+TITLE_EMBEDDING_THRESHOLD = 0.72  # 제목 전용 임계값. 같은 사건 다른 제목(언론사별 변형) 흡수용
 
 
 # ─────────────────────────────────────────────────────────────
@@ -249,12 +249,24 @@ def is_dup_by_embedding(new_vec: np.ndarray, seen_matrix: np.ndarray, threshold:
     return bool((sims >= threshold).any())
 
 
+_KO_PARTICLES = re.compile(
+    r"(에서는|에서도|에게는|에게|에는|에도|에서|에만|에|을|를|이|가|은|는|의|과|와|으로는|으로도|으로|로는|로도|로|도|만|까지|부터|이나|나|이라고|라고|이고|고|이지만|지만|이며|며)$"
+)
+
+
+def _strip_particle(word: str) -> str:
+    m = _KO_PARTICLES.search(word)
+    if m and m.start() > 1:
+        return word[: m.start()]
+    return word
+
+
 def title_keywords(title: str) -> set[str]:
-    """제목에서 3글자 이상 단어만 추출 (조사·단음절 제거)."""
+    """제목에서 3글자 이상 어근만 추출 (조사·단음절 제거)."""
     t = html.unescape(title)
     t = re.sub(r"<[^>]+>", "", t)
     t = re.sub(r"[^\w\s]", " ", t)
-    return {w for w in t.split() if len(w) >= 3}
+    return {_strip_particle(w) for w in t.split() if len(w) >= 3}
 
 
 def is_dup_by_keywords(new_title: str, seen_titles: list[str], threshold: float = 0.4) -> bool:
