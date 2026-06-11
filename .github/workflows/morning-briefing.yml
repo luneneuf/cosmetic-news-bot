@@ -2,7 +2,7 @@ name: morning-briefing
 
 on:
   schedule:
-    - cron: '0 23 * * 0-4'   # UTC 일~목 23:00 = KST 월~금 08:00
+    - cron: '0 23 * * *'   # UTC 매일 23:00 = KST 매일 08:00 (주말 포함 — 한산한 날은 봇이 자체 처리)
   workflow_dispatch:
     inputs:
       dry_run:

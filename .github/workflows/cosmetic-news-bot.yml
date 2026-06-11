@@ -2,9 +2,9 @@ name: cosmetic-news-bot
 
 on:
   schedule:
-    # KST 09:00-17:45 평일 매 15분 (public repo라 Actions 한도 무제한)
-    # UTC 00:00-08:45 월-금
-    - cron: '*/15 0-8 * * 1-5'
+    # KST 09:00-17:45 매일 매 15분 (public repo라 Actions 한도 무제한)
+    # UTC 00:00-08:45 — 주말 포함 (주말 뉴스가 있어야 주말 아침 브리핑에 실림)
+    - cron: '*/15 0-8 * * *'
   workflow_dispatch:
 
 permissions:

@@ -1,8 +1,12 @@
-"""아침 브리핑 봇.
+"""아침 브리핑 봇 — 매일(주말 포함) KST 08:00 실행.
 
-posted_log.jsonl에서 지난 48시간 항목을 읽어
+posted_log.jsonl에서 지난 LOOKBACK_HOURS(24시간) 항목을 읽어
 편집장-기자 교육 루프(Curator → Reviewer → 피드백 → Curator ...)로
 Top 10 선정 후 Slack에 카테고리 묶음 형식으로 게시.
+
+주말 등 한산한 날 처리:
+- 수집 0건 → 게시 없이 정상 종료
+- 수집 MIN_POST_ITEMS 미만 → LLM 큐레이션 생략, 전량 그대로 게시
 """
 
 from __future__ import annotations
@@ -316,7 +320,7 @@ def curator_reviewer_loop(items: list[dict], extra_lessons: list[str] | None = N
         approved.extend(newly)
         lessons.extend(new_lessons)
         # 이번 라운드 후보 전체(승인+거절)를 다음 라운드에서 제외
-        exclude_urls.update(c["url"] for c in candidates)
+        exclude_urls.update(c["url"] for c in candidates if c.get("url"))
 
         print(
             f"[Round {round_num}] +{len(newly)} approved → total={len(approved)} "
@@ -548,6 +552,21 @@ def format_briefing(curated: list[dict], total_count: int) -> str:
     return "\n".join(lines)
 
 
+def format_simple_briefing(items: list[dict]) -> str:
+    """수집이 MIN_POST_ITEMS 미만인 날(주말 등) — 큐레이션 없이 전량 게시."""
+    today = datetime.now(KST).strftime("%Y-%m-%d (%a)")
+    lines = [
+        f"🌅 *코스메틱 아침 브리핑 — {today}*",
+        f"지난 {LOOKBACK_HOURS}시간 수집 {len(items)}건 — 한산한 날, 큐레이션 없이 전량 게시",
+        "",
+    ]
+    for it in items:
+        lines.append(f"• <{it.get('url', '')}|{it.get('title', '')}>")
+    lines.append("")
+    lines.append("📊 raw feed: #cosmetic-news 참고")
+    return "\n".join(lines)
+
+
 # ─────────────────────────────────────────────────────────────
 # 카테고리 분포 누적 & 주간 점검
 
@@ -684,10 +703,23 @@ def main() -> int:
     items = load_recent_posts()
     print(f"loaded {len(items)} posts from last {LOOKBACK_HOURS}h", file=sys.stderr)
 
-    # 데이터 없음 — 미달 메시지 게시하지 않고 조용히 종료 (실패로 표시)
+    # 데이터 없음 — 주말 등 한산한 날의 정상 경로. 게시 없이 성공 종료
+    # (실패(1)로 처리하면 조용한 주말마다 워크플로가 빨갛게 표시됨)
     if not items:
-        print("[SKIP] 수집된 기사 없음 — 게시하지 않음", file=sys.stderr)
-        return 1
+        print("[SKIP] 지난 24시간 수집 기사 없음 — 게시 생략 (정상)", file=sys.stderr)
+        return 0
+
+    # 한산한 날 — 기사가 MIN_POST_ITEMS 미만이면 LLM 큐레이션이 무의미 (최종 게이트도 통과 불가).
+    # 큐레이션 생략하고 전량 그대로 게시.
+    if len(items) < MIN_POST_ITEMS:
+        text = format_simple_briefing(items)
+        if DRY_RUN:
+            print("===== DRY RUN — 한산한 날 전량 게시 미리보기 =====", file=sys.stderr)
+            print(text, file=sys.stderr)
+            return 0
+        post_to_slack(text)
+        print(f"light briefing posted: {len(items)} items (큐레이션 생략)", file=sys.stderr)
+        return 0
 
     # 조립 → 최종 리뷰 게이트. 통과해야만 final이 채워짐.
     final = assemble_briefing(items)
