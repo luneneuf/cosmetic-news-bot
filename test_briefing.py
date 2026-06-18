@@ -59,6 +59,49 @@ def test_dedup_keeps_distinct_events() -> None:
     check("제거 없음", removed == [], f"removed={removed}")
 
 
+def test_dedup_gray_zone_shared_entities() -> None:
+    print("test_dedup_gray_zone_shared_entities")
+    # 실제 사례: 같은 사건(애경 AGE20'S 최미나수 발탁)인데 마케팅 앵글만 달라
+    # 임베딩이 0.86 미만이지만 변별 고유명사(AGE20·최미나수)를 2개 공유 → 묶여야.
+    items = [
+        {"title": "애경산업 AGE20'S, 미스 어스 최미나수 발탁…올리브영 론칭 맞춰 마케팅"},
+        {"title": "엘에스화장품, 고함량 오일 함유 투명 클렌징 조성물 특허 등록"},
+        {"title": "AGE20'S, '최미나수' 모델 발탁…글로벌 No.1 팩트 존재감 강화"},
+    ]
+    a = _norm([1.0, 0.0])
+    angle82 = math.acos(0.82)               # 회색지대 — 마케팅 꼬리말로 벌어진 같은 사건
+    v_dup = [math.cos(angle82), math.sin(angle82)]
+    v_other = _norm([0.0, 1.0])             # 완전 별개
+    kept, removed = b.dedup_by_vectors(items, [a, v_other, v_dup])
+    titles = [k["title"] for k in kept]
+    check("회색지대 같은 사건 1건 제거", len(kept) == 2, f"kept={titles}")
+    check("3번(중복)이 제거됨", all("글로벌 No.1" not in t for t in titles), f"kept={titles}")
+    check("별개 기사는 유지", any("엘에스화장품" in t for t in titles), f"kept={titles}")
+
+
+def test_dedup_gray_zone_needs_shared_entities() -> None:
+    print("test_dedup_gray_zone_needs_shared_entities")
+    # 회색지대 유사도지만 변별 고유명사를 공유하지 않으면(같은 기업 다른 사건 등) 유지.
+    items = [
+        {"title": "코스알엑스 신제품 세럼 출시"},
+        {"title": "닥터지 선크림 리뉴얼 공개"},
+    ]
+    a = _norm([1.0, 0.0])
+    angle83 = math.acos(0.83)
+    bvec = [math.cos(angle83), math.sin(angle83)]
+    kept, _ = b.dedup_by_vectors(items, [a, bvec])
+    check("공유 고유명사 없으면 유지", len(kept) == 2, f"kept={[k['title'] for k in kept]}")
+
+
+def test_distinctive_tokens_extraction() -> None:
+    print("test_distinctive_tokens_extraction")
+    toks = b._distinctive_tokens("애경산업 AGE20'S, 미스 어스 최미나수 발탁…올리브영 론칭")
+    check("브랜드 코드 포함", "age20" in toks, f"toks={sorted(toks)}")
+    check("인물명 포함", "최미나수" in toks, f"toks={sorted(toks)}")
+    check("기업명 포함", "애경산업" in toks, f"toks={sorted(toks)}")
+    check("짧은 일반어 제외", "미스" not in toks and "발탁" not in toks, f"toks={sorted(toks)}")
+
+
 def test_dedup_threshold_boundary() -> None:
     print("test_dedup_threshold_boundary")
     items = [{"title": "X"}, {"title": "Y"}]
