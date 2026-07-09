@@ -6,7 +6,8 @@ GitHub Actions 워크플로가 호출. 동작:
 3. 신규 후보 수집 (URL·blocklist·prefix sig 1차 필터)
 4. OpenAI embedding 배치 호출 (제목+본문 / 제목 전용 동시) — 이중 채널 dedup
 5. EMBEDDING_THRESHOLD(제목+본문) OR TITLE_EMBEDDING_THRESHOLD(제목 전용)
-   OR 제목 핵심어 Jaccard 초과 시 차단 (보도자료 도배 + 매체별 제목 변형 흡수)
+   OR 제목 핵심어 Jaccard OR 제목 임베딩 회색지대+공유 고유명사 초과 시 차단
+   (보도자료 도배 + 매체별 제목 변형 + 같은 사건 다른 마케팅 앵글 흡수)
 6. 통과 항목 Slack 게시 (링크 1줄 + unfurl)
 7. state 갱신 — 게시 성공 항목만 seen 반영 (실패·overflow는 다음 실행에서 재시도)
 """
@@ -55,6 +56,11 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIM = 512               # 1536 → 512로 축소 (저장·계산 비용 ↓)
 EMBEDDING_THRESHOLD = 0.75        # 제목+본문 임계값. 한국어 보도자료 매체별 변형 0.7~0.78 분포
 TITLE_EMBEDDING_THRESHOLD = 0.72  # 제목 전용 임계값. 같은 사건 다른 제목(언론사별 변형) 흡수용
+# 회색지대: 제목 임베딩이 TITLE_EMBEDDING_THRESHOLD엔 못 미쳐도 변별 고유명사(브랜드·인물)를
+# 2개 이상 공유하면 같은 사건으로 판정 (briefing.py의 gray-zone dedup과 동일 원리를 raw feed에도 적용).
+# 실사례: 크래프톤·CJ올리브영 해커톤 기사가 "AI 인재 발굴" vs "성수 팝업·서류전형 혜택"으로
+# 마케팅 앵글만 다르게 보도돼 임계값 미만으로 빠져나간 건.
+TITLE_EMBEDDING_GRAY_THRESHOLD = float(os.environ.get("COLLECT_TITLE_GRAY_THRESHOLD", "0.66"))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -289,6 +295,67 @@ def is_dup_by_keywords(new_title: str, seen_titles: list[str], threshold: float 
     return False
 
 
+def _distinctive_tokens(title: str) -> set[str]:
+    """제목에서 '변별력 있는' 토큰만 추출 (브랜드·인물·모델명 식별용).
+
+    흔한 2~3글자 일반어(글로벌·마케팅·존재감 등)는 우연 일치로 오탐을 부르므로 제외:
+      - 4글자 이상 한글 어근 (인물·브랜드·기업명)
+      - 숫자를 포함한 영숫자 토큰 (모델·제품 코드)
+    briefing.py의 동명 함수와 동일 원리.
+    """
+    t = html.unescape(title or "")
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = re.sub(r"[^\w\s]", " ", t)
+    out: set[str] = set()
+    for w in t.split():
+        w = _strip_particle(w)
+        if len(w) >= 4 or any(ch.isdigit() for ch in w):
+            out.add(w.lower())
+    return out
+
+
+def _shared_entity_count(a: set[str], b: set[str]) -> int:
+    """두 변별 토큰 집합의 공유 개수 — 부분 포함도 매치로 인정.
+
+    "올리브영"과 "CJ올리브영"처럼 매체별로 접두어(사명·계열사명)가 붙거나
+    빠지는 브랜드 표기 변형을 놓치지 않기 위해 완전 일치 대신 포함 관계도 허용.
+    """
+    remaining = set(b)
+    count = 0
+    for ta in a:
+        match = next((tb for tb in remaining if ta == tb or ta in tb or tb in ta), None)
+        if match is not None:
+            count += 1
+            remaining.discard(match)
+    return count
+
+
+def is_dup_by_title_gray_zone(
+    new_title: str,
+    new_vec: np.ndarray | None,
+    seen_titles: list[str],
+    seen_vecs: np.ndarray,
+    gray_threshold: float = TITLE_EMBEDDING_GRAY_THRESHOLD,
+    strong_threshold: float = TITLE_EMBEDDING_THRESHOLD,
+    min_shared_entities: int = 2,
+) -> bool:
+    """제목 임베딩이 회색지대(gray_threshold~strong_threshold)이면서 변별 고유명사를
+    min_shared_entities개 이상 공유하면 같은 사건(마케팅 앵글만 다름)으로 판정.
+    """
+    if new_vec is None or seen_vecs.shape[0] == 0 or not seen_titles:
+        return False
+    new_toks = _distinctive_tokens(new_title)
+    if not new_toks:
+        return False
+    sims = seen_vecs @ new_vec
+    n = min(len(seen_titles), seen_vecs.shape[0])
+    for i in range(n):
+        if gray_threshold <= sims[i] < strong_threshold:
+            if _shared_entity_count(new_toks, _distinctive_tokens(seen_titles[i])) >= min_shared_entities:
+                return True
+    return False
+
+
 # ─────────────────────────────────────────────────────────────
 # Source fetching
 
@@ -485,6 +552,7 @@ def main() -> int:
             seen_urls[c["item"]["link"]] = None
             if c["sig"]:
                 seen_sigs[c["sig"]] = None
+            seen_titles_list.append(c["item"].get("title", ""))
         if new_embeddings.shape[0] > 0:
             seen_embeddings = np.vstack([seen_embeddings, new_embeddings])
         if new_title_embeddings.shape[0] > 0:
@@ -497,17 +565,20 @@ def main() -> int:
         save_seen(TITLES_PATH, seen_sigs)
         save_embeddings(EMBEDDINGS_PATH, seen_embeddings)
         save_embeddings(TITLE_EMBEDDINGS_PATH, seen_title_embeddings)
+        save_titles_list(TITLE_LIST_PATH, seen_titles_list)
         print(f"bootstrap: {len(candidates)} items, {seen_embeddings.shape[0]} embeddings", file=sys.stderr)
         return 0
 
-    # 4단계: 이중 채널 embedding dedup + 제목 핵심어 Jaccard dedup
+    # 4단계: 이중 채널 embedding dedup + 제목 핵심어 Jaccard dedup + 회색지대 보조 게이트
     #   채널 A: 제목+본문 @ EMBEDDING_THRESHOLD — 보도자료 본문이 유사한 경우
     #   채널 B: 제목 전용  @ TITLE_EMBEDDING_THRESHOLD — 본문이 달라도 제목이 같은 경우
     #   채널 C: 제목 핵심어 Jaccard @ 0.40 — 같은 사건 다른 표현 (언론사별 제목 변형)
+    #   채널 D: 제목 임베딩 회색지대(TITLE_EMBEDDING_GRAY_THRESHOLD~TITLE_EMBEDDING_THRESHOLD)
+    #           + 변별 고유명사 2개 이상 공유 — 같은 사건, 마케팅 앵글만 달라 A/B/C를 모두 빠져나간 경우
     # 중복으로 판정된 항목만 즉시 seen 마킹.
     # 통과(accepted) 항목은 게시 성공 후에만 마킹 — 실패·overflow는 다음 실행에서 재시도된다.
     accepted: list[dict] = []  # {item, sig, vec, title_vec}
-    batch_titles: list[str] = []  # 이번 batch에서 통과한 제목 (batch 내 채널 C dedup)
+    batch_titles: list[str] = []  # 이번 batch에서 통과한 제목 (batch 내 채널 C/D dedup)
     dup_emb_count = 0
     for i, c in enumerate(candidates):
         vec = new_embeddings[i] if embeddings_ok else None
@@ -524,6 +595,10 @@ def main() -> int:
             seen_urls[c["item"]["link"]] = None
             dup_emb_count += 1
             continue
+        if embeddings_ok and is_dup_by_title_gray_zone(title, title_vec, seen_titles_list, seen_title_embeddings):
+            seen_urls[c["item"]["link"]] = None
+            dup_emb_count += 1
+            continue
         # 같은 batch 안에서도 dedup (앞서 통과한 항목 대비)
         if embeddings_ok and accepted and (
                 is_dup_by_embedding(vec, np.array([a["vec"] for a in accepted]))
@@ -533,6 +608,11 @@ def main() -> int:
             dup_emb_count += 1
             continue
         if is_dup_by_keywords(title, batch_titles):
+            seen_urls[c["item"]["link"]] = None
+            dup_emb_count += 1
+            continue
+        if embeddings_ok and accepted and is_dup_by_title_gray_zone(
+                title, title_vec, batch_titles, np.array([a["title_vec"] for a in accepted])):
             seen_urls[c["item"]["link"]] = None
             dup_emb_count += 1
             continue
