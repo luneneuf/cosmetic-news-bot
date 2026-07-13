@@ -1,0 +1,50 @@
+name: daily-kcia-edu
+
+# 매일 09:05 KST(=00:05 UTC) KCIA edu_01.php 신규 공지 감지 → Slack 채널 발신.
+# PC가 꺼져 있어도 GitHub 클라우드에서 실행. 로컬 kcia-edu-daily-monitor 태스크를 대체.
+on:
+  schedule:
+    - cron: '5 0 * * *'     # 00:05 UTC = 09:05 KST
+  workflow_dispatch:
+    inputs:
+      test_send:
+        description: '배선 테스트 메시지를 채널로 1회 발신(신규 여부 무관)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write           # kcia_edu/state.json 상태 커밋
+
+concurrency:
+  group: daily-kcia-edu
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Monitor KCIA edu & notify
+        env:
+          LAKA_SLACK_BOT_TOKEN: ${{ secrets.LAKA_SLACK_BOT_TOKEN }}
+          KCIA_SLACK_CHANNEL: ${{ secrets.KCIA_SLACK_CHANNEL }}
+          KCIA_TEST_SEND: ${{ inputs.test_send && '1' || '' }}
+        run: python3 kcia_edu_monitor.py
+
+      - name: Persist state (kcia_edu/state.json)
+        if: ${{ !inputs.test_send }}
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add kcia_edu/state.json
+          if git diff --cached --quiet; then
+            echo "state 변경 없음 — 커밋 생략"
+          else
+            git commit -m "chore(kcia-edu): daily state $(date +%Y-%m-%d) [skip ci]"
+            git push
+          fi
