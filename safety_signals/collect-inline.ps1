@@ -13,10 +13,13 @@
 $ErrorActionPreference = 'Continue'
 
 # === 설정 ===
-$ScriptDir = 'C:\Users\laka\cosmetic-news-bot\safety_signals'
+# 우선순위: 환경변수(클라우드/CI) → $PSScriptRoot(-File 실행) → 로컬 하드코딩 경로(IEX 실행 fallback)
+$ScriptDir = if ($env:SAFETY_SIGNALS_DIR) { $env:SAFETY_SIGNALS_DIR }
+             elseif ($PSScriptRoot)       { $PSScriptRoot }
+             else                          { 'C:\Users\laka\cosmetic-news-bot\safety_signals' }
 $Today = Get-Date -Format 'yyyyMMdd'
 $NowText = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-$DailyDir = Join-Path $ScriptDir "output\daily\$Today"
+$DailyDir = Join-Path (Join-Path (Join-Path $ScriptDir 'output') 'daily') $Today
 if (-not (Test-Path $DailyDir)) { New-Item -ItemType Directory -Path $DailyDir -Force | Out-Null }
 
 # === 날짜 필터 ===

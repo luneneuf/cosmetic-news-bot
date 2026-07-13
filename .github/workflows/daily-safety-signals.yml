@@ -1,0 +1,61 @@
+name: daily-safety-signals
+
+# 매일 09:13 KST(=00:13 UTC) 안전관리 시그널 수집 → 신규만 Slack 발신 → seen_links.json 상태 커밋.
+# PC가 꺼져 있어도 GitHub 클라우드에서 실행된다. 로컬 스케줄 태스크를 대체.
+on:
+  schedule:
+    - cron: '13 0 * * *'   # 00:13 UTC = 09:13 KST (GitHub cron은 UTC·수 분 지연 가능)
+  workflow_dispatch: {}     # 수동 실행(테스트·즉시 실행)
+
+permissions:
+  contents: write           # seen_links.json 상태를 repo에 커밋
+
+concurrency:
+  group: daily-safety-signals
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul          # Get-Date(pwsh)·date(bash) 모두 KST 기준 → output/daily 폴더 날짜 일치
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Collect signals (PowerShell 7)
+        shell: pwsh
+        env:
+          SAFETY_SIGNALS_DIR: ${{ github.workspace }}/safety_signals
+        run: |
+          $ErrorActionPreference = 'Continue'
+          & "$env:SAFETY_SIGNALS_DIR/collect-inline.ps1"
+
+      - name: Send to Slack (Python stdlib)
+        shell: bash
+        env:
+          BRIEFING_SLACK_WEBHOOK_URL: ${{ secrets.BRIEFING_SLACK_WEBHOOK_URL }}
+          LAKA_SLACK_BOT_TOKEN: ${{ secrets.LAKA_SLACK_BOT_TOKEN }}
+          LAKA_SAFETY_SLACK_CHANNEL: ${{ secrets.LAKA_SAFETY_SLACK_CHANNEL }}
+        run: |
+          TODAY=$(date +%Y%m%d)
+          NEWPATH="safety_signals/output/daily/$TODAY/new_items.json"
+          if [ -f "$NEWPATH" ]; then
+            python3 safety_signals_slack.py "$NEWPATH"
+          else
+            echo "no new_items.json for $TODAY — skip Slack"
+          fi
+
+      - name: Persist state (seen_links.json)
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # seen_links.json은 .gitignore 대상이므로 -f 로 강제 스테이징(이미 추적 중이면 무해)
+          git add -f safety_signals/seen_links.json
+          if git diff --cached --quiet; then
+            echo "seen_links.json 변경 없음 — 커밋 생략"
+          else
+            git commit -m "chore(safety-signals): daily state $(date +%Y-%m-%d) [skip ci]"
+            git push
+          fi
