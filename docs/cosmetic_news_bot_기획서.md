@@ -4,37 +4,62 @@ type: summary
 axis: industry
 tags: [cosmetics, industry, news, automation, slack, bot, monitoring]
 created: 2026-05-19
-updated: 2026-05-19
-status: draft
+updated: 2026-07-13
+status: active
 publish: false
 ---
 
 # 기획서: 코스메틱 뉴스 Slack 봇
 
 > **작성자**: Claude (사용자 지시 기반 초안)
-> **작성일**: 2026-05-19 (1차) → 2026-05-19 (2차: 호스팅·언어·state 확정)
-> **관련 도구**: [[안전관리정보_자동수집_기술검증]] (safety_signals — 자매 도구)
-> **상태**: 호스팅·언어·주기·state 확정. 남은 결정 — 채널명·스코프·메시지 형식·시작 출처 5개.
+> **작성일**: 2026-05-19 (1차) → 2026-05-19 (2차: 호스팅·언어·state 확정) → **2026-07-13 (3차: 현행화 개정 — §0-현행 신설, §14 변경 이력 전면 기재)**
+> **관련 도구**: [[안전관리정보_자동수집_기술검증]] (safety_signals — 자매 도구, 2026-06-04부터 같은 repo)
+> **상태**: 라이브 운영 중 (2026-05-20 initial commit ~). 상세 운영 스펙은 repo 루트 `README.md`가 1차 진실이며, 본 문서는 기획 의도·의사결정 이력을 보존한다.
 
 ---
 
-## 0. 확정 사항 (2026-05-19)
+## 0-현행. 확정 사항 — 현행 (2026-07-13 기준)
 
-| 항목 | 결정 |
+**⚠️ 아래 표가 현재 운영 중인 실제 스펙이다. §0-구버전(2026-05-19 확정 표)과 다른 항목은 §14 변경 이력에 사유·날짜가 기재되어 있다.**
+
+| 항목 | 현행 |
 |------|------|
-| 실행 주기 | **평일 09:00-17:45 KST 매 15분** (`cron: '*/15 0-8 * * 1-5'` UTC) |
-| 호스팅 | **GitHub Actions** (`luneneuf/knowledge-hub` private repo) |
-| 언어 | **Python** (Linux runner) |
-| State 영속화 | **별도 브랜치 commit** (`bot/news-state` 가정) |
-| Slack 워크스페이스 | **reperire** (`reperire.slack.com`) |
-| Slack 채널 | **#cosmetic-news** (`C0B48003D39`) |
-| 시크릿 관리 | **GitHub Secrets** (`SLACK_WEBHOOK_URL`) |
+| 호스팅 | **GitHub Actions — `luneneuf/cosmetic-news-bot` 별도 public repo** (기획 당시 knowledge-hub private 계획에서 변경. public이라 Actions 분 무제한) |
+| 실행 주기 | **매일(주말 포함) 09:00-17:45 KST 매 15분** (`cron: '*/15 0-8 * * *'`) — 주말 뉴스가 있어야 주말 아침 브리핑에 실리므로 평일 한정 해제 |
+| 언어 | Python 3.12 (Linux runner) — 계획대로 |
+| State 영속화 | **GitHub Actions Cache** (`news-bot-seen-v8-*` 키, restore/save 분리). 기획의 `bot/news-state` 브랜치 commit 방식은 채택하지 않음 |
+| State 파일 | `seen_links.json`(URL) · `seen_titles.json`(25자 prefix sig) · `seen_titles_embeddings.json`(제목+본문 벡터) · `seen_title_embeddings.json`(제목 전용 벡터) · `seen_titles_list.json`(제목 원문, Jaccard용) · `posted_log.jsonl`(브리핑 봇 데이터 소스, 독립 캐시) |
+| 출처 | **Naver News Search API 6쿼리** (K뷰티 / K뷰티 수출 / 라카 화장품 / 올리브영 / 화장품업계 / 뷰티 트렌드) + **장업신문 자체 RSS 1개**. Google News·전문매체 개별 RSS는 미채택 (§14 참고) |
+| 필터·dedup | **4채널 dedup**: A 제목+본문 임베딩(≥0.75) / B 제목 전용 임베딩(≥0.72) / C 제목 핵심어 Jaccard(≥0.40, 조사 제거) / D 제목 임베딩 회색지대(0.66~0.72)+변별 고유명사 2개 공유. 추가로 URL dedup · 매체 blocklist(도메인+Naver press_code) · 키워드 blocklist · **한국어 제목 전용** · Naver 제목 한정 AND 매칭 |
+| 게시 대상 | **이중 게시** — ① 개인 reperire 워크스페이스 `#cosmetic-news` (Incoming Webhook) ② **LAKA 워크스페이스 `#cosmetic-news`** (Bot Token `chat.postMessage`). 채널별 장애 격리 — 한쪽 실패해도 진행 |
+| 게시 정책 | 링크 1줄 + Slack unfurl (계획대로). `MAX_PER_RUN=20` cap + 1.2초 간격. overflow는 seen 미마킹으로 다음 실행 이월 |
+| 시크릿 | 6개 — `SLACK_WEBHOOK_URL` · `LAKA_SLACK_BOT_TOKEN` · `LAKA_NEWS_SLACK_CHANNEL` · `NAVER_CLIENT_ID` · `NAVER_CLIENT_SECRET` · `OPENAI_API_KEY` |
+| 비용 | GitHub Actions 0원 (public) + OpenAI embedding 월 ~\$0.01 미만. "완전 0원"은 아니나 사실상 무료 |
+| 동거 도구 | 같은 repo에 `briefing.py`(아침 브리핑 봇, [[morning_briefing_bot_기획서]]) + `safety_signals/`(2026-06-04 knowledge-hub에서 이동) |
+
+---
+
+## 0-구버전. 확정 사항 (2026-05-19) — 이력 보존, 현행 아님
+
+**⚠️ 이 표는 기획 시점 결정의 기록이다. 회색 표기 항목은 이후 변경됨 (§14).**
+
+| 항목 | 결정 (당시) | 현행 여부 |
+|------|------|------|
+| 실행 주기 | 평일 09:00-17:45 KST 매 15분 (`*/15 0-8 * * 1-5`) | ❌ → 매일로 확대 (2026-06-12) |
+| 호스팅 | GitHub Actions (`luneneuf/knowledge-hub` private repo) | ❌ → 별도 public repo (2026-05-20) |
+| 언어 | Python (Linux runner) | ✅ |
+| State 영속화 | 별도 브랜치 commit (`bot/news-state` 가정) | ❌ → Actions Cache (2026-05-20) |
+| Slack 워크스페이스 | reperire (`reperire.slack.com`) | ✅ + LAKA 워크스페이스 추가 (2026-05-28) |
+| Slack 채널 | #cosmetic-news (`C0B48003D39`) | ✅ |
+| 시크릿 관리 | GitHub Secrets (`SLACK_WEBHOOK_URL`) | ✅ + 5개 추가 |
 
 ---
 
 ## 1. 한 줄 정의
 
 **코스메틱 산업 전반의 새 뉴스가 RSS·검색 API에서 잡힐 때마다 지정 Slack 채널에 링크만 자동 게시하는 봇.** 요약·분류·필터 최소화. Slack 자체의 링크 unfurl(썸네일·요약·OG 태그)이 1차 디스플레이.
+
+> **[2026-07-13 현행화 주석]** "필터 최소화" 철학은 운영 1주차에 폐기됐다. 보도자료 도배(같은 자료를 수십 매체가 동시 게재)가 예상보다 심각해, §8에서 "복잡도↑ 1단계 보류"로 미뤄뒀던 제목 유사도 dedup이 오히려 시스템의 핵심이 됐다 (4채널 dedup — §0-현행). "게시물은 링크 1줄 그대로"라는 출력 형식만 원안 유지.
 
 ---
 
@@ -68,6 +93,8 @@ publish: false
 ---
 
 ## 3. 수집 대상 (출처 후보)
+
+> **[2026-07-13 현행화 주석]** 이 장의 Layer 1~4 출처 카탈로그는 대부분 미채택. 실제 구현(2026-05-20 initial)은 **Naver News Search API**를 주력으로 택했다 — Google News RSS보다 응답이 구조화(JSON)돼 있고 description을 제공해 embedding dedup 입력으로 쓸 수 있으며, 한국 매체 커버리지가 사실상 상위집합이기 때문. 전문매체 개별 RSS 중에는 장업신문만 자체 RSS가 안정 동작해 채택. 현행 출처는 §0-현행 참고. 이 카탈로그는 향후 출처 추가 시 후보 풀로 유효.
 
 ### Layer 1 — 한국 화장품 전문 매체 (필수)
 
@@ -113,6 +140,8 @@ publish: false
 ---
 
 ## 4. 아키텍처
+
+> **[2026-07-13 현행화 주석]** 4-1 데이터 흐름의 뼈대(수집→dedup→Slack)는 유지되나 수집기는 PowerShell이 아닌 Python, 중복 제거는 URL 비교가 아닌 4채널 dedup(§0-현행)이다. 4-2의 폴더 구조(`content/tools/` 하위)와 state 브랜치 방식은 미채택 — 별도 repo + Actions Cache로 구현 (§14 #1·#2). 4-3 Slack 게시 방식(webhook, 링크 1줄, unfurl)은 원안대로 + LAKA Bot Token 게시가 추가됨.
 
 ### 4-1. 데이터 흐름
 
@@ -182,7 +211,9 @@ bot/news-state 브랜치 (main과 무관, 코드 없음)
 
 ## 5. 운영 — 실행 주기·호스팅
 
-### 5-1. 실행 주기 — 평일 09:00-17:45 KST 매 15분 확정
+> **[2026-07-13 현행화 주석]** 이 장의 무료 한도 계산(§5-1-1·§5-3)은 private repo 전제였고, 별도 **public repo**로 구현되면서 전부 무의미해졌다 (public repo는 Actions 분 무제한). 그 덕에 2026-06-12 주말 실행 확대도 비용 고민 없이 진행. cron도 `1-5`(평일) → `*`(매일)로 변경됨.
+
+### 5-1. 실행 주기 — 평일 09:00-17:45 KST 매 15분 확정 (구버전 — 현행은 매일)
 
 ```yaml
 on:
@@ -403,6 +434,50 @@ jobs:
 
 ## 9. 관련 위키
 
-- [[안전관리정보_자동수집_기술검증]] — safety_signals (자매 도구, 코드·출처 일부 공유)
+- [[안전관리정보_자동수집_기술검증]] — safety_signals (자매 도구, 2026-06-04부터 같은 repo `safety_signals/`)
 - [[안전관리정보_자동수집_제안]] — 안전관리 자동화 전체 제안 (Layer 1·2 출처 카탈로그 참고)
 - [[품질팀_슬랙운영_초안_2026-05]] — Slack 채널 구조 (신규 채널 추가 시 정합성 확인)
+- [[morning_briefing_bot_기획서]] — 아침 브리핑 봇 (같은 repo `briefing.py`, 본 봇의 `posted_log.jsonl`을 데이터 소스로 소비)
+
+---
+
+## 14. 변경 이력 (기획 대비 실제 구현·운영 변경 — 전수 기재)
+
+> git 히스토리 기반. 각 항목은 **[날짜] 변경 내용 — 사유 (관련 커밋)** 형식.
+> "기획 이탈"은 기획서 원안과 다르게 구현된 것, "운영 변경"은 구현 후 운영 중 바뀐 것.
+
+### 아키텍처 (기획 이탈)
+
+1. **[2026-05-20] 호스팅을 knowledge-hub private → `luneneuf/cosmetic-news-bot` 별도 public repo로 변경** — public repo는 Actions 분 무제한이라 §5의 무료 한도 제약(월 2,000분) 자체가 소멸. knowledge-hub 커밋 히스토리 오염 방지 겸. (`c1d3016` initial)
+2. **[2026-05-20] State 영속화를 `bot/news-state` 브랜치 commit → GitHub Actions Cache로 변경** — 브랜치 force-push 방식보다 단순하고 repo history 무오염. 대신 TTL 7일 evict 리스크는 15분 주기 접근으로 상쇄. 캐시 키는 스키마 변경 시마다 버전 업 (v3 → … → v8, 2026-06-01 `b3c0bd5`).
+3. **[2026-05-20] 출처를 Google News RSS·전문매체 RSS → Naver News Search API 주력으로 변경** — JSON 구조화 응답 + description 제공(후일 embedding 입력으로 활용) + 한국 매체 커버리지 상위집합. 전문매체 중 장업신문만 자체 RSS 채택. (`c1d3016`)
+4. **[2026-06-04] safety_signals 수집기를 knowledge-hub에서 이 repo로 이동** — 수집기+Slack 발신기 한 repo 통합. (`247069e`)
+
+### 필터·dedup 진화 (기획의 "필터 최소화" 철학 폐기 과정)
+
+5. **[2026-05-20] 매체 blocklist 도입** — 코스메틱 무관 매체가 광범위 키워드에 걸리는 노이즈 차단. 도메인 매칭 + Naver press_code(`naver:NNN`) 매칭. (`59e9bfe`, `be098f2`)
+6. **[2026-05-20] 보도자료 도배 dedup 1호 — 제목 25자 prefix signature** — 같은 보도자료의 다매체 동시 게재가 운영 첫 주에 문제로 부상. (`39ec48b`)
+7. **[2026-05-21] Naver 제목 한정 AND 매칭** — Naver API가 본문까지 검색해 생기는 노이즈 차단. 쿼리 전 단어가 제목에 있어야 통과. (`a72c0a7`)
+8. **[2026-05-21] Jaccard OR Inclusion 토큰 dedup 추가** — prefix sig가 못 잡는 제목 변형 대응. (`abe1a55`)
+9. **[2026-05-26] OpenAI embedding 의미 dedup 도입 (v6)** — 토큰 기반의 한계(공통 토큰 3/14 = 0.21인 CJ컵 케이스) 돌파. `text-embedding-3-small` 512차원, cosine ≥ 0.85. **이때 `OPENAI_API_KEY` 시크릿 추가 — "비용 0원" 전제 종료** (실비용 월 ~\$0.01 미만). (`fb67102`)
+10. **[2026-05-26~27] 임계값 튜닝: 0.85 → 0.80 → 0.75** — 한국어 보도자료 매체별 변형이 0.7~0.78 분포로 확인. (`b2622ef`, `61ded78`)
+11. **[2026-05-27] 한국어 제목 전용 필터** — 영문 매체의 K뷰티 보도자료 번역 게재가 cross-language embedding으로는 안 잡히는 한계 회피. **기획서 Layer 2의 EN 쿼리(K-beauty·cosmetics industry) 노선 사실상 폐기.** (`72a46b5`)
+12. **[2026-05-27] 키워드 blocklist 추가** — 부고·빙모상 등 제목 키워드 차단. (`4631bdb`)
+13. **[2026-05-27] embedding 입력에 description 통합** — 짧은 제목의 매체별 변형을 본문으로 안정화. (`37e46b4`)
+14. **[2026-05-31] 제목 핵심어 Jaccard dedup(채널 C) + `seen_titles_list.json` 신설** — 실행 간에도 제목 목록 유지. 제목 임베딩 임계 0.82→0.78. (`a8993dc`, `6752df7`)
+15. **[2026-06-12] 제목 임베딩 임계 0.78→0.72 + Jaccard 키워드 조사 제거** — 언론사별 제목 변형 흡수 강화. (`74c1648`)
+16. **[2026-07-09] 회색지대 dedup(채널 D) raw feed 이식** — 제목 임베딩 0.66~0.72 + 변별 고유명사(4글자+ 어근·숫자 포함 토큰) 2개 이상 공유 시 같은 사건 판정. 브랜드 표기 변형("올리브영"↔"CJ올리브영")은 부분 포함 매치. briefing.py에서 검증된 로직(2026-06-18 `b94e7ad`)의 이식. (`f579f85`)
+
+### 게시·운영 변경
+
+17. **[2026-05-28] LAKA 워크스페이스 이중 게시** — 개인 webhook에 더해 LAKA `#cosmetic-news`에 Bot Token(`chat.postMessage`)으로 동시 게시. Webhook → Bot Token 전환 포함. (`c8b71c0`, `2a129cc`)
+18. **[2026-06-12] 실행 주기 평일 → 매일 확대** — 주말 뉴스가 쌓여야 주말 아침 브리핑(자매 봇)이 성립. public repo라 비용 제약 없음. (`ed58d10`)
+19. **[2026-06-12] 안정성 4종** — ① overflow·게시 실패분은 seen 미마킹 → 다음 실행 이월 ② 게시 성공 후에만 seen 마킹 ③ seen을 ordered dict로 (캡 도달 시 오래된 것부터 삭제) ④ Slack 채널별 장애 격리. (`4ae2264`)
+20. **[2026-06-02] embedding API 장애 시 강등 운행** — 크래시 대신 키워드 dedup만으로 그 사이클 운행 (게시 0건 방지). (briefing 계열 작업과 함께 도입)
+
+### 채택하지 않은 것 (시도 후 철회 포함)
+
+- **부정 키워드 제목 필터** — 2026-05-26 도입 당일 revert. keyword_blocklist로 대체. (`e34ee29` → `015dfc7`)
+- **Google News RSS 출처** — 미채택 (#3 참고). 기획서 Layer 2는 후보 풀로만 유지.
+- **`bot/news-state` 브랜치 state** — 미채택 (#2).
+- **제목 유사도 dedup "1단계 보류"** — §8의 보류 결정은 즉시 뒤집혀 1주 안에 구현 (#6~#9).
