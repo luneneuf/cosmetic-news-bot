@@ -529,6 +529,7 @@ def assemble_briefing(items: list[dict]) -> list[dict] | None:
     MAX_POST_ATTEMPTS 동안 통과 못 하면 None → 게시하지 않음.
     """
     carry_lessons: list[str] = []
+    best_effort: list[dict] = []  # 검수는 통과했으나 dedup 후 MIN_POST_ITEMS 미달인 clean 목록 보존
     for attempt in range(1, MAX_POST_ATTEMPTS + 1):
         selection = curator_reviewer_loop(items, extra_lessons=carry_lessons)
         # 큐레이터 카테고리를 URL로 보존 — final_review LLM 재출력이 덮어쓰는 것 교정
@@ -553,14 +554,27 @@ def assemble_briefing(items: list[dict]) -> list[dict] | None:
                 )
             if len(deduped) >= MIN_POST_ITEMS:
                 return deduped[:TARGET_COUNT]
-            # 결정론 제거 후 너무 적으면 — 이슈로 남겨 재조립
+            # 결정론 제거 후 너무 적으면 — 이슈로 남겨 재조립.
+            # 단, 검수·HARD dedup을 통과한 clean 목록이므로 최선 폴백 후보로 보존한다
+            # (이벤트가 몇 개뿐인 날 = 품질 문제가 아니라 한산한 날. 그 clean 소수가 곧 그날의 뉴스).
+            if len(deduped) > len(best_effort):
+                best_effort = deduped
             print("[Final gate] HARD dedup 후 기사 부족 — 재조립", file=sys.stderr)
             carry_lessons.append("선정 기사들이 서로 너무 유사하다. 더 다양한 이벤트를 골라라.")
             continue
         # 통과 못 함 — 발견된 중복 이슈를 다음 시도 큐레이터에게 교육
         carry_lessons.extend(verdict["issues"])
 
-    print("[Final gate] 모든 시도 미달 — 게시 보류", file=sys.stderr)
+    # 모든 시도가 MIN_POST_ITEMS를 못 채움. 검수 통과한 clean 소수가 있으면 그것으로 폴백 게시
+    # (한산한 날 raw < MIN_POST_ITEMS 경로와 동일한 철학 — 조용한 날을 빨간 빌드로 만들지 않는다).
+    if best_effort:
+        print(
+            f"[Final gate] {MIN_POST_ITEMS}건 미달이나 검수 통과 {len(best_effort)}건 폴백 게시",
+            file=sys.stderr,
+        )
+        return best_effort[:TARGET_COUNT]
+
+    print("[Final gate] 통과 기사 없음 — 게시 보류", file=sys.stderr)
     return None
 
 
@@ -691,26 +705,45 @@ def weekly_category_review() -> str | None:
 
 
 def post_to_slack(text: str) -> None:
+    """두 대상(개인 webhook, LAKA bot)에 게시. 채널별 장애를 격리해
+    한쪽이 실패해도 다른 쪽 게시는 진행한다 (collect_and_post.post_text와 동일 정책).
+    두 채널 모두 실패한 경우에만 예외를 던져 워크플로를 빨갛게 표시한다 —
+    부분 성공에 abort하면 재실행 시 성공했던 채널에 중복 게시되고
+    후속 통계 누적(append_category_stats)도 건너뛰게 된다.
+    """
+    any_success = False
     if BRIEFING_WEBHOOK:
-        r = requests.post(
-            BRIEFING_WEBHOOK,
-            json={"text": text, "unfurl_links": False, "unfurl_media": False},
-            timeout=10,
-        )
-        r.raise_for_status()
+        try:
+            r = requests.post(
+                BRIEFING_WEBHOOK,
+                json={"text": text, "unfurl_links": False, "unfurl_media": False},
+                timeout=10,
+            )
+            r.raise_for_status()
+            any_success = True
+        except Exception as ex:
+            print(f"[WARN] briefing webhook post 실패: {ex}", file=sys.stderr)
 
     if LAKA_SLACK_BOT_TOKEN:
-        r = requests.post(
-            "https://slack.com/api/chat.postMessage",
-            headers={"Authorization": f"Bearer {LAKA_SLACK_BOT_TOKEN}"},
-            json={"channel": LAKA_SLACK_CHANNEL, "text": text,
-                  "unfurl_links": False, "unfurl_media": False},
-            timeout=10,
-        )
-        r.raise_for_status()
-        body = r.json()
-        if not body.get("ok"):
-            raise RuntimeError(f"Slack API error: {body.get('error')}")
+        try:
+            r = requests.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={"Authorization": f"Bearer {LAKA_SLACK_BOT_TOKEN}"},
+                json={"channel": LAKA_SLACK_CHANNEL, "text": text,
+                      "unfurl_links": False, "unfurl_media": False},
+                timeout=10,
+            )
+            r.raise_for_status()
+            body = r.json()
+            if body.get("ok"):
+                any_success = True
+            else:
+                print(f"[WARN] LAKA slack post 실패: {body.get('error')}", file=sys.stderr)
+        except Exception as ex:
+            print(f"[WARN] LAKA slack post 오류: {ex}", file=sys.stderr)
+
+    if (BRIEFING_WEBHOOK or LAKA_SLACK_BOT_TOKEN) and not any_success:
+        raise RuntimeError("Slack 게시 실패 — 설정된 모든 채널 실패")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -767,10 +800,12 @@ def main() -> int:
     # 조립 → 최종 리뷰 게이트. 통과해야만 final이 채워짐.
     final = assemble_briefing(items)
 
-    # 게이트 미통과 — 품질 미달 브리핑은 게시하지 않음
+    # 게이트가 clean 폴백조차 못 만든 경우 — 게시할 것이 없다. 게시는 생략하되
+    # 조용한 날을 빨간 빌드로 만들지 않는다 (0건·라이트 경로와 동일한 정책, 799~ 참고).
+    # 리뷰어가 아무것도 통과시키지 못한 상황이므로 사유는 로그로만 남긴다.
     if not final:
-        print("[SKIP] 최종 게이트 미통과 — 게시하지 않음", file=sys.stderr)
-        return 1
+        print("[SKIP] 최종 게이트 통과 기사 없음 — 게시 생략 (정상 종료)", file=sys.stderr)
+        return 0
 
     text = format_briefing(final, len(items))
 
