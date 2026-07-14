@@ -552,7 +552,10 @@ def main() -> int:
             seen_urls[c["item"]["link"]] = None
             if c["sig"]:
                 seen_sigs[c["sig"]] = None
-            seen_titles_list.append(c["item"].get("title", ""))
+            # 채널 D 정렬 유지 — 벡터를 함께 저장하는 embeddings_ok일 때만 제목 기록
+            # (강등 부트스트랩은 new_title_embeddings가 비어 벡터가 안 쌓이므로 제목도 생략).
+            if embeddings_ok:
+                seen_titles_list.append(c["item"].get("title", ""))
         if new_embeddings.shape[0] > 0:
             seen_embeddings = np.vstack([seen_embeddings, new_embeddings])
         if new_title_embeddings.shape[0] > 0:
@@ -635,10 +638,14 @@ def main() -> int:
             seen_urls[it["link"]] = None
             if a["sig"]:
                 seen_sigs[a["sig"]] = None
+            # 제목과 제목-벡터는 반드시 함께 추가 — is_dup_by_title_gray_zone(채널 D)이
+            # seen_titles_list[i] ↔ seen_title_embeddings[i] 위치 정렬에 의존한다.
+            # 강등 운행(embeddings_ok=False)에 제목만 추가하면 두 배열이 영구 desync.
+            # 대가: 강등분은 채널 C(키워드) 기억에서 빠지나 URL·prefix·batch dedup이 커버.
             if embeddings_ok:
                 posted_vecs.append(a["vec"])
                 posted_title_vecs.append(a["title_vec"])
-            seen_titles_list.append(it.get("title", ""))
+                seen_titles_list.append(it.get("title", ""))
         time.sleep(SLACK_GAP_SEC)
 
     if posted_vecs:
