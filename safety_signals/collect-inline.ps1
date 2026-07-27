@@ -176,8 +176,9 @@ Write-Host "총 수집 (필터 전): $($AllItems.Count) items" -ForegroundColor 
 # === 코스메틱 관련성 필터 ===
 # GOV.UK OPSS 일반 제품안전 소스는 장난감·전자제품·자전거 등 화장품 무관 경보를 모두 흘려보냄.
 # 해당 소스에 한해 제목에 화장품 관련 키워드가 있는 항목만 통과 (inclusion filter).
-# 다른 소스(KCIA·식약처·gnews cosmetic 쿼리·PubMed cosmetic 등)는 이미 화장품 특화라 그대로 통과.
-$CosmeticFilterSources = @('uk_opss_atom', 'uk_govuk_search')
+# gnews_en_kbeauty는 쿼리(K-beauty recall OR safety)가 느슨해 자동차 리콜·K-beauty 업계동향 기사까지
+# 흘려보내는 것이 확인되어(2026-07-27) 필터 대상에 포함. 다른 gnews 소스는 화장품 특화 쿼리라 제외.
+$CosmeticFilterSources = @('uk_opss_atom', 'uk_govuk_search', 'gnews_en_kbeauty')
 $CosmeticKeywords = @(
     'cosmetic', 'make-up', 'makeup', 'make up', 'skincare', 'skin care', 'skin cream',
     'skin lightening', 'lotion', 'cream', 'serum', 'lipstick', 'lip balm', 'lip gloss',
@@ -201,6 +202,31 @@ foreach ($it in $AllItems) {
 }
 $AllItems = $cosmeticKept
 Write-Host ("코스메틱 필터 (GOV.UK 소스): 유지 {0} / 화장품 무관 제외 {1}" -f $cosmeticKept.Count, $nonCosmetic.Count) -ForegroundColor Yellow
+
+# === 안전/회수 관련성 필터 (gnews_en_kbeauty 전용) ===
+# 이 소스는 쿼리에 "K-beauty"가 항상 포함돼 위 코스메틱 키워드 필터("beauty")를 무조건 통과함.
+# "K뷰티 투자·진출·트렌드" 같은 일반 업계 기사(안전 시그널 아님)까지 새는 걸 막기 위해
+# 안전/회수 관련 키워드를 추가로 요구 (2026-07-27, "Korean fashion founders pivot to K-beauty" 오탐 계기).
+$SafetyRequiredSources = @('gnews_en_kbeauty')
+$SafetyKeywords = @(
+    'recall', 'safety', 'warning', 'contaminat', 'hazard', 'banned', 'ban on', 'allerg',
+    'adverse', 'injur', 'lawsuit', 'defect', 'tainted', 'toxic', 'poison', 'withdraw',
+    'alert', 'ftc', 'fda warn', 'infection', 'outbreak'
+)
+$nonSafety = @()
+$safetyKept = @()
+foreach ($it in $AllItems) {
+    if ($SafetyRequiredSources -contains $it.source) {
+        $t = ([string]$it.title).ToLower()
+        $isMatch = $false
+        foreach ($kw in $SafetyKeywords) { if ($t.Contains($kw)) { $isMatch = $true; break } }
+        if ($isMatch) { $safetyKept += $it } else { $nonSafety += $it }
+    } else {
+        $safetyKept += $it
+    }
+}
+$AllItems = $safetyKept
+Write-Host ("안전/회수 필터 (gnews_en_kbeauty): 유지 {0} / 업계동향 제외 {1}" -f $safetyKept.Count, $nonSafety.Count) -ForegroundColor Yellow
 
 # === 날짜 필터 ===
 $rawCount = $AllItems.Count
@@ -320,9 +346,11 @@ $excludedPath = Join-Path $DailyDir 'excluded.json'
     too_old_count = $tooOld.Count
     undated_count = $undated.Count
     non_cosmetic_count = $nonCosmetic.Count
+    non_safety_count = $nonSafety.Count
     too_old = $tooOld
     undated = $undated
     non_cosmetic = $nonCosmetic
+    non_safety = $nonSafety
 } | ConvertTo-Json -Depth 5 | Out-File -FilePath $excludedPath -Encoding utf8
 
 # === Markdown 다이제스트 저장 ===
