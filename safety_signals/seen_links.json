@@ -1,6 +1,6 @@
 {
-  "last_updated_at": "2026-07-28T12:30:59+09:00",
-  "total": 321,
+  "last_updated_at": "2026-07-29T12:33:53+09:00",
+  "total": 327,
   "links": [
     "https://news.google.com/rss/articles/CBMi-gFBVV95cUxNd3Nfb1E5S3JaLVM3eFJuSWN2VlhpX2o1NV94TzRzNnR3OUJoZVIxd1NBekxRbTZNQUtHcTFSNWRvNHZPenZuemdwTGxXV1Byck9zaVJFNElUczdtT3Z3Vm9IN21JNmxJYjgwYXZKU1hXMUsybHROX2wzV1hQV2tvblFROFltdllmb1pqNWgxa0h5YW9nM0NVU1FZbUZzc3VWM3NUejdrZmE5RkRnNTFZWUhOU0N4MFdKLUhVZTFORE5BZG1ydTdVZDF3Z0lVa1MzdHhVSFlfNjRlN0oyVEJqS3YzbUZ6YjU1Uk1UVGJvYWhkTHhoS0lKMnNR?oc=5",
     "https://news.google.com/rss/articles/CBMi1gFBVV95cUxPcklKZFR4Z0JFQUtKdVpiUm1KaEFiZ0E2VFVXNzZHc0dQT0J4WmJEbHhDV2VMMUkxX3owZGd3b0t6NjQ2elQ5bE96UFBfaE0xa3dLWDZJU2RfVUg3WHBndjQ0U3VwWkZxNTEwWGE3bWVsUS1BbGNWbUFpWFh6ZW9UWlB0MS1OcTBrTjdac1N4aVh0QUZCSGVqQnU1YXplMk5UbDlPaFBEVHR3cUFpUmhELThIRVI0ek12RVlQeUtUYmQ1RWpEX0phUlQyTk9vbkk5WUFXOHFR?oc=5",
@@ -43,6 +43,7 @@
     "https://news.google.com/rss/articles/CBMifEFVX3lxTFBYU0xERmp1LVlmV25zREhOR0VqZFRRclh5SFJrU1dmbEk5T1l2MXRGc2lEVmRvV1hva21iWllrWHVMSTFEc3cwX281UmpFQmlzaDhZN1gzbkU2WTEtOTgwejNvU0hSQ3NlMXJPazY1bHE2M2c5a0pBSTJVcGg?oc=5",
     "https://news.google.com/rss/articles/CBMifkFVX3lxTFA5Y3JrU0RFY1FjUUVkTXdudjBERlliMWhNSXp3MmlsSUhzMGpjSXVONW5peHVoVU04VkNZRkxXZlJWaGZSS1dmME1HVTg1dnNvOFNRbXFEYURIaHp6R1ZnR2R1cWFQdlpIUzc2czRLQjJRWlNQMmtXdVVCZzJXZw?oc=5",
     "https://news.google.com/rss/articles/CBMigAFBVV95cUxONVJTd2dZRHB2aTIyQkN6RXVkeE1GbGhwZFhVcC1vM2VmNE53dnlJOG10T1BkUDA0X1RSQUVNekxXRnpFeEZsNF9tRUVNUjJqOTl0MHZWSGt5VjAyMnZ0LWotVloxOWowc2tERmx2Z1lwbW5XWFc2bTNIUzBUSHp0YdIBlAFBVV95cUxOOWJkQnZZdFlsa0RHbmdPU0taZ01mcWkyczJlTzhSYkxTbXJrYXpIVWZ3WWJVbHEzUlI5Y3BIdXVYcUY2VFRUM2l1aE5JMjhPMjBNUHVwRVhYVVpFejB0TklNSXdodzVaUVc5RGRWQ1FlQ2Z6WTFaQnV6VXFYWUt2SExKWkt4U3ppeENHZ0xyZnQ3UmNq?oc=5",
+    "https://news.google.com/rss/articles/CBMigAFBVV95cUxPMDY3cVRTMm1JZEI3anByWFh2ZXRGUnUxQjhrOFZ5emJEUzE2bjN1QXNTZkFRekdRLXg3ZUZ0MTZaZTBLdzhMMjIxZGNtU2plUDJ2QWZ1b2hZMlJfMWpLM0ZIR1ZKRnBQbHpxUUJzRzlxM1FxeDlrVzVkZ1Y5T0ZQUtIBhgFBVV95cUxPNnRWZk5jWnd3Um5weXRDY3ppZDVpSVJoTDN5RnRGbFhOT2JZdmJIcTFqMmlMb2tSMnFocy1YV09pRlY3RDh2UmFCNjZ1aXlyOGh6MWpFY3BuMUdQeGVJdXJWYzVyWEZ3dkt6M0g3bWhaT1pvVFUwa2o4M0pwTlhyR0tyMTBRQQ?oc=5",
     "https://news.google.com/rss/articles/CBMiggFBVV95cUxNMFhJYjc3MUM3UEZJdUZIaW5XRTJjdWxmQ0VPU0xNTXc2WE1EMzgzbkhaOHFZWTdxMWI1dm1pRUpFRm1RajlWa1Z6LThPOHJScHBvUi1tRnY5MkdHVjRINWJjdXNWXzRILWd2emxJYld2V3VlZW4xcEE4Sl9FOURIdVln0gGWAUFVX3lxTFBORWtpcEh6WGVMdENnbjhUcDgtSGc1R0I1OG5zXzB5UzlvZTVUMVR5N1J2SlY0WmRRQ3lXdUxoSmZqczlYTUE2QkFCcWZRSkM5bW1sdW85TUJ3M0pobUxjanRmZHBGaV9lMFRSQ2hUekFxMF9SUWpGQk5CMU4yZHFvc2pSUGl4elA2Rl9kYXUyUmhQbXRRUQ?oc=5",
     "https://news.google.com/rss/articles/CBMihgFBVV95cUxOYUtxX05mamI0MHg3X3RGZ1h0VFk0a1pKQXJBejA4bTFSMkdCcmZzOS05bVlkS0ZwdkFOcEJPOE9oLXZXMjUtZ1hQMHk2UkJyanAyLU1pUHF6ZDZkdUdYaTRmR2FvWld2WWxQd3BGbHhEVm1vdXd2Z0U2WFZJdTk1VWRfNEdvZw?oc=5",
     "https://news.google.com/rss/articles/CBMihgFBVV95cUxPeVdaN1BxOE4yTFYwWDJjczlFN0NoT3FralJvV2Mwb1JJb2hId202c0NUUmxuRWNYeS1QaDZaZ2N5cXJYcFdyWFNDZnItb0VoT2I0cjdkRFhZazg4ampSSms2b0hydVp6bDg1TU5NSnZOVVRKWnhlTWtUSFM1NWtoUDUtcnNxZ9IBiwFBVV95cUxQb0JIc3NnTFpfRGcya2FmbjI5M2Q5dXJSVVZoajBvSGtzaVVRTFJ1dW1SU3M0dnNMcE5udXVhTS1Yal8zYWlndWk0V0N4SUZ5Y2tkeWFkRmx2aTFWWWU1MGVtdmx4Z3l6RW5mQ0J3NW1nQ3VINFZ0b1hEX2ZsOTJNa2tHUHBFZlRxUVlN?oc=5",
@@ -52,6 +53,7 @@
     "https://news.google.com/rss/articles/CBMiiAFBVV95cUxNZW1xZ2JxeGRLSzFnNGNkOFVCRkFYNTlIYlZIZUI5MTl6UFh4YVZtVzJVTm9RZ1k5ZTQ5U0tUamZjUjFuaFMwSkpwLTJ3RlB1OTR6TGFTdE41bXdjZV9jRkE4Qi1iYU52TTUzbVRKMXdUS3dQcWUtbTdicHZOaDFtVk5ZN1EweGZZ0gGOAUFVX3lxTE5Ydzd4SkJrNmtlVUljRUlBREZpS2hJRUg4Z3RDV3hxRThqQXpCRWZUSThiYkRsV01IM0dTbXEwWkhsR2otZHdxZWNSdEtKZndreHpDSWNlQ2lJSDdNQlRScWlKd0xXWEJUSFZmalZ1eEdKVEpoMUVkc25IbFpQVGI1Zkh1cVEyMXlGUzF0SkE?oc=5",
     "https://news.google.com/rss/articles/CBMiiAFBVV95cUxOMXI5QktYcDFoLXpENXhkZ2RpRk9RUEVucWhrdVg4aEp6VjdNN01IUWh2ejFLa3FWazEydFZnZmhHUG5hQ0FmTXhScDJyRzlqS1dHTEdrMnVxVkxjNHVJYU9PeTU0T3gyQ29ZLXNnVEFEUTdTSXp3S0VGY3NoSmw3YVI5YWE4TV9X?oc=5",
     "https://news.google.com/rss/articles/CBMiiAFBVV95cUxPc2tuZFNUVk0zbVlTUFg4aXlrSXdIUDBMUkRwYWJfSUNQUGRxZE5lVEdMX05LQ1NNSjdvQ3lhRVhFcWhsMG5uRjMxN2hDRHcyZjZwSVN3Q1RkdHlmQUV3ZUc3NVBrTEliVkpwcVlmNlFjcm5yOE44bFpWcVpWQzJGRXpISWNCNjJB?oc=5",
+    "https://news.google.com/rss/articles/CBMiiAFBVV95cUxPeXRIb1UwWWZITXg3aDhjVWd3aDBYVkFWaTFGcklQNVJpQ1hKVXdNUFcxVlVpMldZLUZzZ2FSWGJuV2Z2NTRyYzU0VXFfSndILTQ1SDFLSGlqc2d1MFZERU1QamxVWU1kYXRraVNxekdUQUIxaGNpMmx2S3gzbFdjQTU0dDk0NXVt?oc=5",
     "https://news.google.com/rss/articles/CBMiiAFBVV95cUxQM1NLNWhUR2VSQ2JibFFpZG1sMXdkUU1HTFlsZkY5MmRxVEp0R0c1YmtJQ0QyUW4xU2NfV1Y0ZVExZHd4cU91QjdHMDBCWS1hRlFSMUVyeVIxbTdnSm1BN0R1UWxUWmhuVThZczh5ZXFhZ3BMMUtSbUhwVTh0c21zc1lEQmFBdlQ4?oc=5",
     "https://news.google.com/rss/articles/CBMiigFBVV95cUxOeVlFQ25hZjZHdTNXemRpNjRQMmgtcnJMd1M5Z2lVTFFMaG1zSm4xeVc0Z1ZJUDNuazFnaGl2NFdTUjg3aEZLQzBzM0lXOFFaY0F4ZkxRNlJIb2ZOZmhPeUlncElTalE5MW5QOTBiSlZsQWVnVjdxTDJHTWk1d1d4WXVSd2NBNjQyeEE?oc=5",
     "https://news.google.com/rss/articles/CBMiigJBVV95cUxQZkZZUlFsT29lTlZoX0FqakxkV2lKdGFGVW1ybGtKcmJrWEJkRi1weUZORHJJUE9PNVRjZFpwUWtKWUQ4N0dqTHVfVWFITEJTazhTbXlwazBDVU83SXVPaFhkVzhxS2RMTnVFMjNONlY1c01oYU9BcVFRM1NNb3I0bW5sbHJiZExPb0pDaUZEZWlLZGdtTC1ZZnI1WjVoWExEWFJCVFc0STk3WkdNUHRZck1pT0hMXzZrYl85YmlIS1hJbTlaLVhjMHJyNkdMdWRybWh3RDM5Q09sRlJ2UzhOempaUUUwemJ5bjJjbUFFUkQxM2UtZWt2NjhPT21sZHktaTc3WW1nMXdGdw?oc=5",
@@ -270,6 +272,7 @@
     "https://www.kcia.or.kr/home/edu/edu_01.php?type=view&no=17747&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
     "https://www.kcia.or.kr/home/edu/edu_01.php?type=view&no=17760&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
     "https://www.kcia.or.kr/home/edu/edu_01.php?type=view&no=17761&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
+    "https://www.kcia.or.kr/home/edu/edu_01.php?type=view&no=17773&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
     "https://www.kcia.or.kr/home/notice/notice.php?type=view&no=17509&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
     "https://www.kcia.or.kr/home/notice/notice.php?type=view&no=17575&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
     "https://www.kcia.or.kr/home/notice/notice.php?type=view&no=17576&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
@@ -322,6 +325,9 @@
     "https://www.kcia.or.kr/home/notice/notice.php?type=view&no=17754&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
     "https://www.kcia.or.kr/home/notice/notice.php?type=view&no=17755&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
     "https://www.kcia.or.kr/home/notice/notice.php?type=view&no=17756&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
-    "https://www.kcia.or.kr/home/notice/notice.php?type=view&no=17770&ss=page%3D%26skind%3D%26sword%3D%26ob%3D"
+    "https://www.kcia.or.kr/home/notice/notice.php?type=view&no=17770&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
+    "https://www.kcia.or.kr/home/notice/notice.php?type=view&no=17772&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
+    "https://www.kcia.or.kr/home/notice/notice.php?type=view&no=17773&ss=page%3D%26skind%3D%26sword%3D%26ob%3D",
+    "https://www.kcia.or.kr/home/notice/notice.php?type=view&no=17774&ss=page%3D%26skind%3D%26sword%3D%26ob%3D"
   ]
 }
