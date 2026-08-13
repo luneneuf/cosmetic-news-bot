@@ -203,15 +203,20 @@ foreach ($it in $AllItems) {
 $AllItems = $cosmeticKept
 Write-Host ("코스메틱 필터 (GOV.UK 소스): 유지 {0} / 화장품 무관 제외 {1}" -f $cosmeticKept.Count, $nonCosmetic.Count) -ForegroundColor Yellow
 
-# === 안전/회수 관련성 필터 (gnews_en_kbeauty 전용) ===
-# 이 소스는 쿼리에 "K-beauty"가 항상 포함돼 위 코스메틱 키워드 필터("beauty")를 무조건 통과함.
+# === 안전/회수 관련성 필터 (gnews_en_kbeauty, gnews_kr_recall, gnews_kr_safety) ===
+# gnews_en_kbeauty는 쿼리에 "K-beauty"가 항상 포함돼 위 코스메틱 키워드 필터("beauty")를 무조건 통과함.
 # "K뷰티 투자·진출·트렌드" 같은 일반 업계 기사(안전 시그널 아님)까지 새는 걸 막기 위해
 # 안전/회수 관련 키워드를 추가로 요구 (2026-07-27, "Korean fashion founders pivot to K-beauty" 오탐 계기).
-$SafetyRequiredSources = @('gnews_en_kbeauty')
+# gnews_kr_recall/safety도 "식약처 화장품 회수"·"화장품 부작용" 쿼리인데도 Google News 매칭이 느슨해
+# "샤넬 화장품 가격 인상" 같은 완전 무관 기사가 새는 것이 확인됨(2026-08-13) → 동일 필터 적용.
+$SafetyRequiredSources = @('gnews_en_kbeauty', 'gnews_kr_recall', 'gnews_kr_safety')
 $SafetyKeywords = @(
     'recall', 'safety', 'warning', 'contaminat', 'hazard', 'banned', 'ban on', 'allerg',
     'adverse', 'injur', 'lawsuit', 'defect', 'tainted', 'toxic', 'poison', 'withdraw',
-    'alert', 'ftc', 'fda warn', 'infection', 'outbreak'
+    'alert', 'ftc', 'fda warn', 'infection', 'outbreak',
+    '회수', '리콜', '부작용', '경고', '위해', '유해', '오염', '금지', '알레르기', '알러지',
+    '이상반응', '소송', '결함', '유독', '중독', '피해', '적발', '위반', '과징금', '행정처분',
+    '식약처'
 )
 $nonSafety = @()
 $safetyKept = @()
@@ -226,7 +231,34 @@ foreach ($it in $AllItems) {
     }
 }
 $AllItems = $safetyKept
-Write-Host ("안전/회수 필터 (gnews_en_kbeauty): 유지 {0} / 업계동향 제외 {1}" -f $safetyKept.Count, $nonSafety.Count) -ForegroundColor Yellow
+Write-Host ("안전/회수 필터 (gnews_en_kbeauty·gnews_kr_recall·gnews_kr_safety): 유지 {0} / 업계동향 제외 {1}" -f $safetyKept.Count, $nonSafety.Count) -ForegroundColor Yellow
+
+# === KCIA 공지사항 규제/안전 관련성 필터 (kcia_notice_html 전용) ===
+# kcia_notice_html은 KCIA 게시판 공지를 필터 없이 전부 통과시켜, 행사 홍보관 참여기업 모집·
+# FTA TBT 위원회 의견수렴·채용·웨비나 일정·회원사 할인 같은 안전과 무관한 협회 행정 공지까지
+# 다수 흘러들어온 것이 확인됨(2026-08-13). 제목에 규제/안전 관련 키워드가 있는 항목만 통과
+# (inclusion filter). kcia_edu_law_html("법령" 전용 게시판)은 이미 규제 콘텐츠만 있어 제외 대상 아님.
+$KciaRegulatoryFilterSources = @('kcia_notice_html')
+$KciaRegulatoryKeywords = @(
+    '법령', '안전', '위해', '유해', '회수', '폐기', '리콜', '고시', '공고', '지침', '기준',
+    '가이드라인', '규정', '시행령', '시행규칙', '개정', '원료', '성분', '품질관리',
+    '표시·광고', '표시광고', 'gmp', 'fda', 'nmpa', '부작용', '이상반응', '알레르기',
+    '금지', '제한', '승인', '허가', '시험방법', '민원인안내서'
+)
+$nonRegulatory = @()
+$regulatoryKept = @()
+foreach ($it in $AllItems) {
+    if ($KciaRegulatoryFilterSources -contains $it.source) {
+        $t = ([string]$it.title).ToLower()
+        $isMatch = $false
+        foreach ($kw in $KciaRegulatoryKeywords) { if ($t.Contains($kw)) { $isMatch = $true; break } }
+        if ($isMatch) { $regulatoryKept += $it } else { $nonRegulatory += $it }
+    } else {
+        $regulatoryKept += $it
+    }
+}
+$AllItems = $regulatoryKept
+Write-Host ("규제/안전 필터 (KCIA 공지): 유지 {0} / 협회 행정공지 제외 {1}" -f $regulatoryKept.Count, $nonRegulatory.Count) -ForegroundColor Yellow
 
 # === 날짜 필터 ===
 $rawCount = $AllItems.Count
@@ -347,10 +379,12 @@ $excludedPath = Join-Path $DailyDir 'excluded.json'
     undated_count = $undated.Count
     non_cosmetic_count = $nonCosmetic.Count
     non_safety_count = $nonSafety.Count
+    non_regulatory_count = $nonRegulatory.Count
     too_old = $tooOld
     undated = $undated
     non_cosmetic = $nonCosmetic
     non_safety = $nonSafety
+    non_regulatory = $nonRegulatory
 } | ConvertTo-Json -Depth 5 | Out-File -FilePath $excludedPath -Encoding utf8
 
 # === Markdown 다이제스트 저장 ===
