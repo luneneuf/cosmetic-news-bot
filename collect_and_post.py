@@ -61,6 +61,9 @@ TITLE_EMBEDDING_THRESHOLD = 0.72  # 제목 전용 임계값. 같은 사건 다�
 # 실사례: 크래프톤·CJ올리브영 해커톤 기사가 "AI 인재 발굴" vs "성수 팝업·서류전형 혜택"으로
 # 마케팅 앵글만 다르게 보도돼 임계값 미만으로 빠져나간 건.
 TITLE_EMBEDDING_GRAY_THRESHOLD = float(os.environ.get("COLLECT_TITLE_GRAY_THRESHOLD", "0.66"))
+# 채널 E: 제목 임베딩이 이 값 이상 + 3글자 이름까지 포함한 변별 토큰 3개 공유 → 같은 사건.
+# 실사례: '허민호, 30년 만에 신세계 복귀…뷰티·가구' vs '신세계, 허민호 영입…화장품·가구' (채널 A~D 모두 통과).
+TITLE_EMBEDDING_FLOOR = float(os.environ.get("COLLECT_TITLE_FLOOR", "0.5"))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -356,6 +359,59 @@ def is_dup_by_title_gray_zone(
     return False
 
 
+# 채널 E용 일반어 — 3글자 이상이라 _broad_tokens에 걸리지만 변별력이 없는 업계 상용어.
+_GENERIC_TOKENS = frozenset({
+    "화장품", "신제품", "글로벌", "마케팅", "브랜드", "업계", "올해", "지난해", "내년", "최근",
+    "시장", "매출", "사업", "기업", "소비자", "국내", "해외", "한국", "성장", "출시", "공개",
+    "진행", "확대", "강화", "동시에", "함께", "통해", "위해", "대한", "관련", "이후", "가운데",
+    "뷰티", "패션", "업체", "제품", "서비스", "프로젝트", "캠페인", "프로모션", "이벤트",
+    "오프라인", "온라인", "플랫폼", "콘텐츠", "트렌드", "전략", "투자", "협업", "콜라보",
+    "ceo", "대표", "신임", "영입", "선임", "발표", "예정", "나선다", "맡는다", "맡긴다",
+})
+
+
+def _broad_tokens(title: str) -> set[str]:
+    """채널 E용 토큰 — 3글자 인명·사명(허민호·신세계 등)까지 포함하되 일반어는 제외.
+
+    _distinctive_tokens는 4글자 이상만 취해 3글자 이름을 놓친다. 같은 사건의 매체별 제목 변형
+    ('허민호 신세계 복귀' vs '신세계 허민호 영입')이 공유 토큰 1개(올리브영)로만 집계돼
+    채널 D를 빠져나간 실사례에서 도입.
+    """
+    return {w for w in title_keywords(title) if w.lower() not in _GENERIC_TOKENS}
+
+
+def is_dup_by_broad_entities(
+    new_title: str,
+    new_vec: np.ndarray | None,
+    seen_titles: list[str],
+    seen_vecs: np.ndarray,
+    floor: float = TITLE_EMBEDDING_FLOOR,
+    min_shared: int = 3,
+    min_shared_no_vec: int = 4,
+) -> bool:
+    """제목 임베딩이 floor 이상이면서 변별 토큰(3글자 이름 포함)을 min_shared개 이상 공유하면 중복.
+
+    임베딩 장애(new_vec is None) 시엔 유사도 검사 없이 더 엄격한 min_shared_no_vec로 판정.
+    """
+    new_toks = _broad_tokens(new_title)
+    if len(new_toks) < min_shared or not seen_titles:
+        return False
+    if new_vec is not None and seen_vecs.shape[0] > 0:
+        sims = seen_vecs @ new_vec
+        n = min(len(seen_titles), seen_vecs.shape[0])
+        need = min_shared
+    else:
+        sims = None
+        n = len(seen_titles)
+        need = min_shared_no_vec
+    for i in range(n):
+        if sims is not None and sims[i] < floor:
+            continue
+        if _shared_entity_count(new_toks, _broad_tokens(seen_titles[i])) >= need:
+            return True
+    return False
+
+
 # ─────────────────────────────────────────────────────────────
 # Source fetching
 
@@ -578,6 +634,8 @@ def main() -> int:
     #   채널 C: 제목 핵심어 Jaccard @ 0.40 — 같은 사건 다른 표현 (언론사별 제목 변형)
     #   채널 D: 제목 임베딩 회색지대(TITLE_EMBEDDING_GRAY_THRESHOLD~TITLE_EMBEDDING_THRESHOLD)
     #           + 변별 고유명사 2개 이상 공유 — 같은 사건, 마케팅 앵글만 달라 A/B/C를 모두 빠져나간 경우
+    #   채널 E: 제목 임베딩 >= TITLE_EMBEDDING_FLOOR + 3글자 이름 포함 변별 토큰 3개 공유 — D가 놓치는
+    #           '인명·사명이 3글자'인 같은 사건 (허민호·신세계 등)
     # 중복으로 판정된 항목만 즉시 seen 마킹.
     # 통과(accepted) 항목은 게시 성공 후에만 마킹 — 실패·overflow는 다음 실행에서 재시도된다.
     accepted: list[dict] = []  # {item, sig, vec, title_vec}
@@ -602,6 +660,10 @@ def main() -> int:
             seen_urls[c["item"]["link"]] = None
             dup_emb_count += 1
             continue
+        if is_dup_by_broad_entities(title, title_vec, seen_titles_list, seen_title_embeddings):
+            seen_urls[c["item"]["link"]] = None
+            dup_emb_count += 1
+            continue
         # 같은 batch 안에서도 dedup (앞서 통과한 항목 대비)
         if embeddings_ok and accepted and (
                 is_dup_by_embedding(vec, np.array([a["vec"] for a in accepted]))
@@ -616,6 +678,13 @@ def main() -> int:
             continue
         if embeddings_ok and accepted and is_dup_by_title_gray_zone(
                 title, title_vec, batch_titles, np.array([a["title_vec"] for a in accepted])):
+            seen_urls[c["item"]["link"]] = None
+            dup_emb_count += 1
+            continue
+        if is_dup_by_broad_entities(
+                title, title_vec, batch_titles,
+                np.array([a["title_vec"] for a in accepted]) if embeddings_ok and accepted
+                else np.empty((0, EMBEDDING_DIM), dtype=np.float32)):
             seen_urls[c["item"]["link"]] = None
             dup_emb_count += 1
             continue

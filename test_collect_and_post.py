@@ -96,6 +96,62 @@ def test_title_gray_zone_empty_seen_is_safe() -> None:
     check("seen 없으면 False", not is_dup)
 
 
+# ── 채널 E: 3글자 인명·사명 포함 변별 토큰 ────────────────────
+
+HEO_A = "'올리브영 성장 주역' 허민호, 30년 만에 신세계 복귀…뷰티·가구 맡는다"
+HEO_B = "신세계, '올리브영 10년 CEO' 허민호 영입…화장품·가구 동시에 맡긴다"
+
+
+def test_broad_dup_real_case() -> None:
+    print("test_broad_dup_real_case")
+    # 실사례: 채널 D는 변별 토큰 공유 1개(올리브영)라 놓쳤다. 3글자 이름(허민호·신세계)까지 3개 공유.
+    new_vec = _norm([1.0, 0.0])
+    seen_vec = _gray_vec(new_vec, 0.6)
+    check("채널 D는 못 잡음(회귀 기준)", not c.is_dup_by_title_gray_zone(HEO_B, new_vec, [HEO_A], np.array([seen_vec])))
+    check("채널 E가 잡음", c.is_dup_by_broad_entities(HEO_B, new_vec, [HEO_A], np.array([seen_vec])))
+
+
+def test_broad_dup_below_floor_kept() -> None:
+    print("test_broad_dup_below_floor_kept")
+    new_vec = _norm([1.0, 0.0])
+    seen_vec = _gray_vec(new_vec, 0.3)
+    check("임베딩이 floor 미만이면 유지", not c.is_dup_by_broad_entities(HEO_B, new_vec, [HEO_A], np.array([seen_vec])))
+
+
+def test_broad_dup_generic_words_not_enough() -> None:
+    print("test_broad_dup_generic_words_not_enough")
+    # 일반어(화장품·글로벌·마케팅)만 겹치는 별개 기사는 유사도가 높아도 유지.
+    a = "아모레퍼시픽 글로벌 마케팅 강화, 화장품 신제품 출시"
+    b = "LG생활건강 글로벌 마케팅 확대, 화장품 신제품 공개"
+    new_vec = _norm([1.0, 0.0])
+    seen_vec = _gray_vec(new_vec, 0.7)
+    check("일반어 공유는 중복 아님", not c.is_dup_by_broad_entities(b, new_vec, [a], np.array([seen_vec])))
+
+
+def test_broad_dup_two_shared_not_enough() -> None:
+    print("test_broad_dup_two_shared_not_enough")
+    # 같은 기업의 다른 사건 — 공유 토큰 2개(올리브영·신세계)뿐이면 유지.
+    a = "올리브영 신세계 백화점 입점 협의"
+    b = "신세계 올리브영 경쟁 구도 분석 리포트"
+    new_vec = _norm([1.0, 0.0])
+    seen_vec = _gray_vec(new_vec, 0.7)
+    check("공유 2개는 중복 아님", not c.is_dup_by_broad_entities(b, new_vec, [a], np.array([seen_vec])))
+
+
+def test_broad_dup_degraded_mode_stricter() -> None:
+    print("test_broad_dup_degraded_mode_stricter")
+    empty = np.empty((0, 2), dtype=np.float32)
+    check("임베딩 장애 시 3개 공유는 유지", not c.is_dup_by_broad_entities(HEO_B, None, [HEO_A], empty))
+    a = "코스맥스 출신 허민호 신세계 올리브영 부문 총괄 선임"
+    b = "신세계 허민호 올리브영 코스맥스 출신 총괄 속보"
+    check("임베딩 장애 시 4개 이상 공유는 중복", c.is_dup_by_broad_entities(b, None, [a], empty))
+
+
+def test_broad_dup_empty_seen_is_safe() -> None:
+    print("test_broad_dup_empty_seen_is_safe")
+    check("seen 없으면 False", not c.is_dup_by_broad_entities(HEO_A, _norm([1.0, 0.0]), [], np.empty((0, 2), dtype=np.float32)))
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:
